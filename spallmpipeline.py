@@ -346,23 +346,24 @@ def run_mclust(data_matrix, n_clusters, seed=2024, max_dims=30):
             robjects.r('install.packages("mclust", repos="https://cloud.r-project.org", quiet=TRUE)')
             robjects.r.library("mclust")
             
-        if 'run_mclust_native' not in robjects.r:
-            robjects.r('''
-            run_mclust_native <- function(x, n_clusters, seed=2024) {
-                suppressPackageStartupMessages(library(mclust))
-                set.seed(seed)
-                mat <- as.matrix(x)
-                dimnames(mat) <- NULL
-                res <- Mclust(mat, G=n_clusters, modelNames="EEE")
-                if (is.null(res)) {
-                    res <- Mclust(mat, G=n_clusters)
-                }
-                return(as.integer(res$classification))
+        r_code = '''
+        run_mclust_native <- function(mat, n_clusters, seed) {
+            suppressPackageStartupMessages(library(mclust))
+            set.seed(seed)
+            mat <- as.matrix(mat)
+            dimnames(mat) <- NULL
+            res <- Mclust(mat, G=n_clusters, modelNames="EEE")
+            if (is.null(res)) {
+                res <- Mclust(mat, G=n_clusters)
             }
-            ''')
-            
-        r_func = robjects.r['run_mclust_native']
-        labels = np.array(r_func(data_mat, n_clusters, seed)).astype(int)
+            return(as.integer(res$classification))
+        }
+        '''
+        robjects.r(r_code)
+        
+        robjects.globalenv['tmp_mclust_mat'] = numpy2ri.numpy2rpy(data_mat)
+        res = robjects.r(f'run_mclust_native(tmp_mclust_mat, {n_clusters}, {seed})')
+        labels = np.array(res).astype(int)
         return labels.astype(str)
     except Exception as e:
         print(f"Warning: mclust execution via rpy2 failed ({e}). Returning fallback clusters.")
