@@ -325,6 +325,11 @@ def adjacent_matrix_preprocessing(adata_omics1, adata_omics2, adj_emb):
         'adj_emb': adj_emb
     }
 
+def add_gaussian_noise(matrix, mean=0.0, std=0.001):
+    """Add Gaussian noise to the matrix."""
+    noise = torch.normal(mean=mean, std=std, size=matrix.size()).to(matrix.device)
+    return matrix + noise
+
 def run_mclust(data_matrix, n_clusters, seed=2024, max_dims=30):
     """Perform mclust clustering via rpy2 using native R helper function with PCA reduction."""
     data_mat = np.array(data_matrix, dtype=np.float64)
