@@ -326,7 +326,7 @@ def adjacent_matrix_preprocessing(adata_omics1, adata_omics2, adj_emb):
     }
 
 def run_mclust(data_matrix, n_clusters, seed=2024, max_dims=30):
-    """Perform mclust clustering via rpy2 with automatic PCA dimension reduction for high-dim inputs."""
+    """Perform mclust clustering via rpy2 using native R helper function with PCA reduction."""
     data_mat = np.array(data_matrix, dtype=np.float64)
     if data_mat.shape[1] > max_dims:
         n_comps = min(max_dims, data_mat.shape[0] - 1, data_mat.shape[1])
@@ -346,15 +346,23 @@ def run_mclust(data_matrix, n_clusters, seed=2024, max_dims=30):
             robjects.r('install.packages("mclust", repos="https://cloud.r-project.org", quiet=TRUE)')
             robjects.r.library("mclust")
             
-        robjects.r['set.seed'](seed)
-        r_matrix = robjects.r['matrix'](
-            robjects.FloatVector(data_mat.flatten()),
-            nrow=data_mat.shape[0],
-            ncol=data_mat.shape[1],
-            byrow=True
-        )
-        res = robjects.r['Mclust'](r_matrix, n_clusters, "EEE")
-        labels = np.array(res.rx2('classification')).astype(int)
+        if 'run_mclust_native' not in robjects.r:
+            robjects.r('''
+            run_mclust_native <- function(x, n_clusters, seed=2024) {
+                suppressPackageStartupMessages(library(mclust))
+                set.seed(seed)
+                mat <- as.matrix(x)
+                dimnames(mat) <- NULL
+                res <- Mclust(mat, G=n_clusters, modelNames="EEE")
+                if (is.null(res)) {
+                    res <- Mclust(mat, G=n_clusters)
+                }
+                return(as.integer(res$classification))
+            }
+            ''')
+            
+        r_func = robjects.r['run_mclust_native']
+        labels = np.array(r_func(data_mat, n_clusters, seed)).astype(int)
         return labels.astype(str)
     except Exception as e:
         print(f"Warning: mclust execution via rpy2 failed ({e}). Returning fallback clusters.")
