@@ -446,7 +446,10 @@ def clustering(adata, n_clusters=7, key='emb', add_key='spaLLM', method='leiden'
         res = search_res(adata, n_clusters, method=method, use_rep=key, start=0.1, end=3.0, increment=0.01)
         print(f"Found resolution={res} with target cluster count={n_clusters}")
         if method == 'leiden':
-            sc.tl.leiden(adata, random_state=0, resolution=res, key_added=add_key)
+            try:
+                sc.tl.leiden(adata, random_state=0, resolution=res, key_added=add_key, flavor='igraph', n_iterations=2, directed=False)
+            except TypeError:
+                sc.tl.leiden(adata, random_state=0, resolution=res, key_added=add_key)
         else:
             sc.tl.louvain(adata, random_state=0, resolution=res, key_added=add_key)
     elif method == 'kmeans':
@@ -465,7 +468,10 @@ def search_res(adata, n_clusters, method='leiden', use_rep='spaLLM', start=0.1, 
     for res in np.arange(start, end, increment):
         res = round(res, 3)
         if method == 'leiden':
-            sc.tl.leiden(adata, random_state=0, resolution=res)
+            try:
+                sc.tl.leiden(adata, random_state=0, resolution=res, flavor='igraph', n_iterations=2, directed=False)
+            except TypeError:
+                sc.tl.leiden(adata, random_state=0, resolution=res)
             clusters = adata.obs['leiden']
         else:
             sc.tl.louvain(adata, random_state=0, resolution=res)

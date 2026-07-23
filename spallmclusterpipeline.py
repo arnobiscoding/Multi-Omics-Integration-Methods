@@ -95,6 +95,7 @@ import sklearn
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 from sklearn.neighbors import NearestNeighbors, kneighbors_graph
+from sklearn.preprocessing import LabelEncoder
 from scipy.sparse import coo_matrix
 import anndata as ad
 import scanpy as sc
@@ -433,7 +434,10 @@ def clustering(adata, n_clusters=7, key='emb', add_key='spaLLM', method='leiden'
         res = search_res(adata, n_clusters, method=method, use_rep=key, start=0.1, end=3.0, increment=0.01)
         print(f"Found resolution={res} with target cluster count={n_clusters}")
         if method == 'leiden':
-            sc.tl.leiden(adata, random_state=0, resolution=res, key_added=add_key)
+            try:
+                sc.tl.leiden(adata, random_state=0, resolution=res, key_added=add_key, flavor='igraph', n_iterations=2, directed=False)
+            except TypeError:
+                sc.tl.leiden(adata, random_state=0, resolution=res, key_added=add_key)
         else:
             sc.tl.louvain(adata, random_state=0, resolution=res, key_added=add_key)
     elif method == 'kmeans':
@@ -452,7 +456,10 @@ def search_res(adata, n_clusters, method='leiden', use_rep='spaLLM', start=0.1, 
     for res in np.arange(start, end, increment):
         res = round(res, 3)
         if method == 'leiden':
-            sc.tl.leiden(adata, random_state=0, resolution=res)
+            try:
+                sc.tl.leiden(adata, random_state=0, resolution=res, flavor='igraph', n_iterations=2, directed=False)
+            except TypeError:
+                sc.tl.leiden(adata, random_state=0, resolution=res)
             clusters = adata.obs['leiden']
         else:
             sc.tl.louvain(adata, random_state=0, resolution=res)
@@ -717,7 +724,9 @@ class Train_spaLLM:
                         raw_pseudo = km.fit_predict(z_emb)
 
                     smoothed_pseudo = spatial_label_smoothing(self.adj_spatial_omics1, raw_pseudo)
-                    current_target_labels = F.one_hot(torch.tensor(smoothed_pseudo).long(), num_classes=self.n_clusters).float().to(self.device)
+                    le = LabelEncoder()
+                    smoothed_pseudo_encoded = le.fit_transform(smoothed_pseudo)
+                    current_target_labels = F.one_hot(torch.tensor(smoothed_pseudo_encoded).long(), num_classes=self.n_clusters).float().to(self.device)
                     self.model.train()
 
             if self.use_clustering_loss and phase1_end <= epoch < phase2_end:
