@@ -58,9 +58,9 @@ ALL_DATASETS_CONFIG = {
 
 ACTIVE_DATASETS = ["all"]
 
-MASTER_SEED = 42
-rng = np.random.default_rng(MASTER_SEED)
-SEEDS = rng.integers(low=1, high=2**31 - 1, size=10).tolist()
+SEEDS = [
+    42, 0, 1, 7, 123, 1234, 2022, 2023, 2024, 1337
+]
 
 if len(ACTIVE_DATASETS) == 1 and ACTIVE_DATASETS[0].lower() == "all":
     datasets_to_run = list(ALL_DATASETS_CONFIG.keys())
@@ -102,7 +102,9 @@ from sklearn.metrics import (
     adjusted_mutual_info_score,
     homogeneity_score,
     v_measure_score,
-    silhouette_score
+    silhouette_score,
+    calinski_harabasz_score,
+    davies_bouldin_score
 )
 
 def fix_seed(seed: int):
@@ -205,7 +207,7 @@ def search_res(adata, n_clusters, method='leiden', use_rep='joint_feat', start=0
     return 0.5
 
 def evaluate_clustering(y_true_series, y_pred_series, features_matrix, name=""):
-    """Evaluate clustering performance using ARI, NMI, AMI, Homogeneity, V-measure, and Silhouette."""
+    """Evaluate clustering performance using ARI, NMI, Silhouette, AMI, CHI, DBI, Homogeneity, and V-measure."""
     mask = (y_true_series != 'Exclude') & (y_true_series != 'unknown') & (y_true_series.notna())
     y_true = y_true_series[mask].astype(str)
     y_pred = y_pred_series[mask].astype(str)
@@ -213,8 +215,9 @@ def evaluate_clustering(y_true_series, y_pred_series, features_matrix, name=""):
 
     if len(y_true) == 0 or len(np.unique(y_pred)) < 2:
         return {
-            'ARI': 0.0, 'NMI': 0.0, 'AMI': 0.0,
-            'Homogeneity': 0.0, 'V-measure': 0.0, 'Silhouette': 0.0
+            'ARI': 0.0, 'NMI': 0.0, 'Silhouette': 0.0,
+            'AMI': 0.0, 'CHI': 0.0, 'DBI': 0.0,
+            'Homogeneity': 0.0, 'V-measure': 0.0
         }
 
     ari = adjusted_rand_score(y_true, y_pred)
@@ -222,15 +225,31 @@ def evaluate_clustering(y_true_series, y_pred_series, features_matrix, name=""):
     ami = adjusted_mutual_info_score(y_true, y_pred)
     homo = homogeneity_score(y_true, y_pred)
     v_meas = v_measure_score(y_true, y_pred)
-    sil = silhouette_score(feats, y_pred)
+
+    try:
+        sil = silhouette_score(feats, y_pred)
+    except Exception:
+        sil = 0.0
+
+    try:
+        chi = calinski_harabasz_score(feats, y_pred)
+    except Exception:
+        chi = 0.0
+
+    try:
+        dbi = davies_bouldin_score(feats, y_pred)
+    except Exception:
+        dbi = 0.0
 
     metrics = {
         'ARI': float(ari),
         'NMI': float(nmi),
+        'Silhouette': float(sil),
         'AMI': float(ami),
+        'CHI': float(chi),
+        'DBI': float(dbi),
         'Homogeneity': float(homo),
-        'V-measure': float(v_meas),
-        'Silhouette': float(sil)
+        'V-measure': float(v_meas)
     }
 
     if name:
@@ -283,7 +302,7 @@ def plot_uce_summary_boxplots(df_all, save_dir=None):
         print("No valid metrics found for Box & Whiskers plots.")
         return
 
-    metrics = ["ARI", "NMI", "AMI", "Homogeneity", "V-measure", "Silhouette"]
+    metrics = ["ARI", "NMI", "Silhouette", "AMI", "CHI", "DBI", "Homogeneity", "V-measure"]
     metrics = [m for m in metrics if m in df_all.columns]
     if not metrics:
         return
@@ -320,7 +339,7 @@ def plot_uce_summary_boxplots(df_all, save_dir=None):
             pass
         plt.close(fig)
 
-    fig, axes = plt.subplots(3, 2, figsize=(18, 16))
+    fig, axes = plt.subplots(4, 2, figsize=(18, 20))
     axes_flat = axes.flatten()
     for idx, metric in enumerate(metrics):
         ax = axes_flat[idx]
@@ -1015,10 +1034,12 @@ def run_uce_workflow(dname, cfg, env_mode, seed, device, show_plots=False):
         'cluster alg': 'KMeans',
         'ARI': metrics_kmeans['ARI'],
         'NMI': metrics_kmeans['NMI'],
+        'Silhouette': metrics_kmeans['Silhouette'],
         'AMI': metrics_kmeans['AMI'],
+        'CHI': metrics_kmeans['CHI'],
+        'DBI': metrics_kmeans['DBI'],
         'Homogeneity': metrics_kmeans['Homogeneity'],
         'V-measure': metrics_kmeans['V-measure'],
-        'Silhouette': metrics_kmeans['Silhouette'],
         'resolution': None
     }
 
@@ -1026,10 +1047,12 @@ def run_uce_workflow(dname, cfg, env_mode, seed, device, show_plots=False):
         'cluster alg': 'Leiden',
         'ARI': metrics_leiden['ARI'],
         'NMI': metrics_leiden['NMI'],
+        'Silhouette': metrics_leiden['Silhouette'],
         'AMI': metrics_leiden['AMI'],
+        'CHI': metrics_leiden['CHI'],
+        'DBI': metrics_leiden['DBI'],
         'Homogeneity': metrics_leiden['Homogeneity'],
         'V-measure': metrics_leiden['V-measure'],
-        'Silhouette': metrics_leiden['Silhouette'],
         'resolution': res
     }
 
@@ -1037,10 +1060,12 @@ def run_uce_workflow(dname, cfg, env_mode, seed, device, show_plots=False):
         'cluster alg': 'mclust',
         'ARI': metrics_mclust['ARI'],
         'NMI': metrics_mclust['NMI'],
+        'Silhouette': metrics_mclust['Silhouette'],
         'AMI': metrics_mclust['AMI'],
+        'CHI': metrics_mclust['CHI'],
+        'DBI': metrics_mclust['DBI'],
         'Homogeneity': metrics_mclust['Homogeneity'],
         'V-measure': metrics_mclust['V-measure'],
-        'Silhouette': metrics_mclust['Silhouette'],
         'resolution': None
     }
 
@@ -1087,7 +1112,7 @@ def main():
             print(f"\n=======================================================")
             print(f"AVERAGE PERFORMANCE FOR {dname} ({len(SEEDS)} seeds)")
             print(f"=======================================================")
-            numeric_cols = ["ARI", "NMI", "AMI", "Homogeneity", "V-measure", "Silhouette"]
+            numeric_cols = ["ARI", "NMI", "Silhouette", "AMI", "CHI", "DBI", "Homogeneity", "V-measure"]
             for alg, df_alg in df_metrics.groupby("cluster alg"):
                 print(f"\n--- {alg} Performance (Mean ± Std) ---")
                 means = df_alg[numeric_cols].mean()

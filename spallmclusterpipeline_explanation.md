@@ -67,9 +67,9 @@ The pipeline supports automated path resolution for local and Kaggle cloud envir
 ### Ablation Seed Generation
 To eliminate stochastic bias, a master random number generator seeds 10 independent pipeline iterations:
 ```python
-MASTER_SEED = 42
-rng = np.random.default_rng(MASTER_SEED)
-SEEDS = rng.integers(low=1, high=2**31 - 1, size=10).tolist()
+SEEDS = [
+    42, 0, 1, 7, 123, 1234, 2022, 2023, 2024, 1337
+]
 ```
 
 ---

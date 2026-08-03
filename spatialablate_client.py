@@ -114,6 +114,8 @@ class SpatialAblateClient:
         nmi: Optional[float] = None,
         silhouette: Optional[float] = None,
         ami: Optional[float] = None,
+        chi: Optional[float] = None,
+        dbi: Optional[float] = None,
         homogeneity: Optional[float] = None,
         v_measure: Optional[float] = None,
         github_url: Optional[str] = None,
@@ -147,6 +149,8 @@ class SpatialAblateClient:
         if nmi is not None: payload["nmi"] = float(nmi)
         if silhouette is not None: payload["silhouette"] = float(silhouette)
         if ami is not None: payload["ami"] = float(ami)
+        if chi is not None: payload["chi"] = float(chi)
+        if dbi is not None: payload["dbi"] = float(dbi)
         if homogeneity is not None: payload["homogeneity"] = float(homogeneity)
         if v_measure is not None: payload["v_measure"] = float(v_measure)
 
@@ -192,7 +196,7 @@ class SpatialAblateClient:
 
         df = pd.read_csv(csv_path)
 
-        metric_cols = ["ARI", "NMI", "AMI", "Homogeneity", "V-measure", "Silhouette"]
+        metric_cols = ["ARI", "NMI", "Silhouette", "AMI", "CHI", "DBI", "Homogeneity", "V-measure"]
         existing_metrics = [m for m in metric_cols if m in df.columns]
 
         if not existing_metrics:
@@ -248,6 +252,8 @@ class SpatialAblateClient:
             if "NMI" in means and not pd.isna(means["NMI"]): kwargs["nmi"] = float(means["NMI"])
             if "Silhouette" in means and not pd.isna(means["Silhouette"]): kwargs["silhouette"] = float(means["Silhouette"])
             if "AMI" in means and not pd.isna(means["AMI"]): kwargs["ami"] = float(means["AMI"])
+            if "CHI" in means and not pd.isna(means["CHI"]): kwargs["chi"] = float(means["CHI"])
+            if "DBI" in means and not pd.isna(means["DBI"]): kwargs["dbi"] = float(means["DBI"])
             if "Homogeneity" in means and not pd.isna(means["Homogeneity"]): kwargs["homogeneity"] = float(means["Homogeneity"])
             if "V-measure" in means and not pd.isna(means["V-measure"]): kwargs["v_measure"] = float(means["V-measure"])
 
@@ -281,6 +287,8 @@ def main():
     parser.add_argument("--nmi", type=float, help="Normalized Mutual Information score [0.0, 1.0]")
     parser.add_argument("--silhouette", type=float, help="Silhouette Coefficient score [-1.0, 1.0]")
     parser.add_argument("--ami", type=float, help="Adjusted Mutual Information score")
+    parser.add_argument("--chi", type=float, help="Calinski-Harabasz Index score")
+    parser.add_argument("--dbi", type=float, help="Davies-Bouldin Index score")
     parser.add_argument("--homogeneity", type=float, help="Homogeneity score")
     parser.add_argument("--vmeasure", type=float, help="V-Measure score")
     parser.add_argument("--github", help="GitHub repository URL")
@@ -302,6 +310,8 @@ def main():
                 nmi=args.nmi,
                 silhouette=args.silhouette,
                 ami=args.ami,
+                chi=args.chi,
+                dbi=args.dbi,
                 homogeneity=args.homogeneity,
                 v_measure=args.vmeasure,
                 github_url=args.github,
