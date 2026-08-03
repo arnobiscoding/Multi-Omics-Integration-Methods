@@ -454,19 +454,30 @@ def get_scgpt_spatial_embeddings(adata_rna, device):
                 embed_data = None
     
     candidate_model_dirs = [
+        '/kaggle/input/datasets/sadmanbiazidarnob/scgpt-spatial-model-files/scGPT_spatial_v1/scGPT_spatial_v1',
+        '/kaggle/input/datasets/sadmanbiazidarnob/scgpt-spatial-model-files/scGPT_spatial_v1',
+        '/kaggle/input/datasets/sadmanbiazidarnob/scgpt-spatial-model-files',
         '/kaggle/input/datasets/sadmanbiazidarnob/scgpt-spatial-weights',
-        '/kaggle/input/datasets/sadmanbiazidarnob/scgpt-spatial/scGPT_spatial',
-        '/kaggle/input/datasets/sadmanbiazidarnob/scgpt-human/scGPT_human',
-        'D:/FYDP/scGPT-spatial/scGPT_spatial_weights',
-        'D:/FYDP/scGPT-spatial/scGPT_human',
-        'D:/FYDP/GATCON/d1_test/scGPT_human'
+        '/kaggle/input/datasets/sadmanbiazidarnob/scgpt-spatial/scGPT_spatial'
     ]
     
     model_dir = None
     for d in candidate_model_dirs:
-        if os.path.exists(d) and (os.path.exists(os.path.join(d, "args.json")) or os.path.exists(os.path.join(d, "vocab.json"))):
+        if os.path.exists(d) and (
+            os.path.exists(os.path.join(d, "best_model.pt")) or 
+            os.path.exists(os.path.join(d, "model.pt")) or 
+            os.path.exists(os.path.join(d, "args.json")) or 
+            os.path.exists(os.path.join(d, "vocab.json"))
+        ):
             model_dir = d
             break
+
+    if model_dir is None and os.path.exists('/kaggle/input'):
+        for root, dirs, files in os.walk('/kaggle/input'):
+            if 'best_model.pt' in files or 'model.pt' in files:
+                model_dir = root
+                print(f"Path finder located scGPT-spatial weights at: {model_dir}")
+                break
     
     adata_rna.var_names_make_unique()
     adata_rna.var['gene_names'] = adata_rna.var.index.astype(str).str.upper()
