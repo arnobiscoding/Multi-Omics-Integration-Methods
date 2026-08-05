@@ -141,15 +141,17 @@ def pca(data_matrix: Any, n_comps: int = 30) -> np.ndarray:
 
 
 def clr_normalize_each_cell(adata: ad.AnnData, inplace: bool = True):
-    def seurat_clr(x):
-        s = np.sum(np.log1p(x[x > 0]))
-        exp = np.exp(s / len(x)) if len(x) > 0 else 1.0
-        return np.log1p(x / exp)
-
+    """Normalize count vector for each spot using fast vectorized CLR normalization."""
     if not inplace:
         adata = adata.copy()
-    raw_x = adata.X.toarray() if sp.issparse(adata.X) else np.array(adata.X)
-    adata.X = np.apply_along_axis(seurat_clr, 1, raw_x)
+    raw_x = adata.X.toarray() if sp.issparse(adata.X) else np.array(adata.X, dtype=np.float32)
+    pos_mask = raw_x > 0
+    log_pos = np.where(pos_mask, np.log1p(raw_x), 0.0)
+    row_sums = np.sum(log_pos, axis=1, keepdims=True)
+    n_vars = max(1, raw_x.shape[1])
+    exp_geom = np.exp(row_sums / n_vars)
+    exp_geom = np.where(exp_geom == 0, 1.0, exp_geom)
+    adata.X = np.log1p(raw_x / exp_geom)
     return adata
 
 
