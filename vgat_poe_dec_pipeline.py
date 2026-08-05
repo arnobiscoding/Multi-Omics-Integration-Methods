@@ -417,10 +417,10 @@ def run_vgat_poe_dec_workflow(dname, cfg, env_mode, seed, device, show_plots=Fal
     trainer = SpatialOmicsTrainer(
         model=model,
         learning_rate=1e-3,
-        warmup_epochs=40,
-        finetune_epochs=60,
+        warmup_epochs=400,
+        finetune_epochs=600,
         p_update_interval=5,
-        early_stop_eval_interval=10,
+        early_stop_eval_interval=100,
         subsample_ratio=0.1 if x_rna.shape[0] < 1000 else 0.05,
         device=device
     )
