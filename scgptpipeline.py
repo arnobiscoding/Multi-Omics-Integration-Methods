@@ -523,7 +523,7 @@ def run_scgpt_workflow(dname, cfg, env_mode, seed, device, show_plots=False):
     adata_mod2.obsm['feat'] = feat_mod2
 
     # 5. Concatenate (Fuse) scGPT Embedding with RNA and Modality 2 Features
-    joint_feat = np.concatenate((X_scGPT, feat_rna, feat_mod2), axis=1)
+    joint_feat = np.concatenate((X_scGPT, feat_mod2), axis=1)
     adata_rna.obsm['joint_feat'] = joint_feat
     print(f"Fused feature matrix shape: {joint_feat.shape}")
 
