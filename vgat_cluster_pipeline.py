@@ -145,6 +145,7 @@ def clr_normalize_each_cell(adata: ad.AnnData, inplace: bool = True):
     if not inplace:
         adata = adata.copy()
     raw_x = adata.X.toarray() if sp.issparse(adata.X) else np.array(adata.X, dtype=np.float32)
+    raw_x = np.clip(raw_x, 0.0, None)
     pos_mask = raw_x > 0
     log_pos = np.where(pos_mask, np.log1p(raw_x), 0.0)
     row_sums = np.sum(log_pos, axis=1, keepdims=True)
@@ -247,7 +248,7 @@ def load_dataset_data(dname: str, cfg: dict, env_mode: str = "auto"):
         labels = np.random.randint(0, 7, size=num_spots).astype(str)
 
         adata_rna = ad.AnnData(X=sp.csr_matrix(np.random.poisson(2.0, size=(num_spots, 1000))))
-        adata_mod2 = ad.AnnData(X=np.random.randn(num_spots, 50).astype(np.float32))
+        adata_mod2 = ad.AnnData(X=np.abs(np.random.randn(num_spots, 50)).astype(np.float32) * 5.0)
 
         adata_rna.obsm['spatial'] = coords
         adata_mod2.obsm['spatial'] = coords
