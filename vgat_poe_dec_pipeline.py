@@ -81,42 +81,42 @@ ENV_MODE = "auto"
 ALL_DATASETS_CONFIG = {
     "mouse-brain-e11-s1": {
         "type": "mouse_brain",
-        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/mouse-brain-e11-s1/",
+        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/multi-omics-datasets/Mouse_Brain_E11_S1/",
         "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Dataset7_Mouse_Brain_ATAC/",
         "mod2_candidates": ["adata_ATAC.h5ad", "adata_peaks_normalized.h5ad"],
         "anno_file": "anno.csv"
     },
     "mouse-brain-e13-s1": {
         "type": "mouse_brain",
-        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/mouse-brain-e13-s1/",
+        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/multi-omics-datasets/Mouse_Brain_E13_S1/",
         "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Dataset7_Mouse_Brain_ATAC/",
         "mod2_candidates": ["adata_ATAC.h5ad", "adata_peaks_normalized.h5ad"],
         "anno_file": "anno.csv"
     },
     "mouse-brain-e15-s1": {
         "type": "mouse_brain",
-        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/mouse-brain-e15-s1/",
+        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/multi-omics-datasets/Mouse_Brain_E15_S1/",
         "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Dataset7_Mouse_Brain_ATAC/",
         "mod2_candidates": ["adata_ATAC.h5ad", "adata_peaks_normalized.h5ad"],
         "anno_file": "anno.csv"
     },
     "mouse-brain-e18-s1": {
         "type": "mouse_brain",
-        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/mouse-brain-e18-s1/",
+        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/multi-omics-datasets/Mouse_Brain_E18_S1/",
         "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Dataset7_Mouse_Brain_ATAC/",
         "mod2_candidates": ["adata_ATAC.h5ad", "adata_peaks_normalized.h5ad"],
         "anno_file": "anno.csv"
     },
     "human-lymph-node-a1": {
         "type": "human_lymph_node",
-        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/lymph-node-data/Dataset11_Human_Lymph_Node_A1/",
+        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/multi-omics-datasets/Human_Lymph_Node_A1/",
         "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Dataset11_Human_Lymph_Node_A1/",
         "mod2_candidates": ["adata_ADT.h5ad"],
         "anno_file": "annotation.csv"
     },
     "human-lymph-node-d1": {
         "type": "human_lymph_node",
-        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/human-lymph-node-d1/10x_human_lymph_node_D1/",
+        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/multi-omics-datasets/Human_Lymph_Node_D1/",
         "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Dataset12_Human_Lymph_Node_D1/",
         "mod2_candidates": ["adata_ADT.h5ad"],
         "anno_file": "annotation.csv"

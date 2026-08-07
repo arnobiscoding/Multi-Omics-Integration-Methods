@@ -32,7 +32,7 @@ ALL_DATASETS_CONFIG = {
     "mouse-brain-e11-s1": {
         "type": "mouse_brain",
         "species": "mouse",
-        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/mouse-brain-e11-s1/",
+        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/multi-omics-datasets/Mouse_Brain_E11_S1/",
         "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Dataset7_Mouse_Brain_ATAC/",
         "mod2_candidates": ["adata_ATAC.h5ad", "adata_peaks_normalized.h5ad"],
         "anno_file": "anno.csv"
@@ -40,7 +40,7 @@ ALL_DATASETS_CONFIG = {
     "mouse-brain-e13-s1": {
         "type": "mouse_brain",
         "species": "mouse",
-        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/mouse-brain-e13-s1/",
+        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/multi-omics-datasets/Mouse_Brain_E13_S1/",
         "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Dataset7_Mouse_Brain_ATAC/",
         "mod2_candidates": ["adata_ATAC.h5ad", "adata_peaks_normalized.h5ad"],
         "anno_file": "anno.csv"
@@ -48,7 +48,7 @@ ALL_DATASETS_CONFIG = {
     "mouse-brain-e15-s1": {
         "type": "mouse_brain",
         "species": "mouse",
-        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/mouse-brain-e15-s1/",
+        "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/multi-omics-datasets/Mouse_Brain_E15_S1/",
         "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Dataset7_Mouse_Brain_ATAC/",
         "mod2_candidates": ["adata_ATAC.h5ad", "adata_peaks_normalized.h5ad"],
         "anno_file": "anno.csv"
