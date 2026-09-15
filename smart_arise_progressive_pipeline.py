@@ -296,6 +296,16 @@ class SAGEDecoderBlock(nn.Module):
         return x
 
 
+def cosine_similarity_matrix(emb):
+    """Compute pairwise cosine similarity matrix with diagonal zeroed out (ARISE)."""
+    mat = torch.matmul(emb, emb.T)
+    norm = torch.norm(emb, p=2, dim=1).reshape((emb.shape[0], 1))
+    mat = torch.div(mat, torch.matmul(norm, norm.T))
+    mat = torch.where(torch.isnan(mat), torch.zeros_like(mat), mat)
+    mat = mat - torch.diag_embed(torch.diag(mat))
+    return mat
+
+
 def compute_dense_spatial_contrastive_loss(emb, dist_edge_index, dist_edge_weight):
     """
     ARISE dense global spatial contrastive binary cross-entropy loss.
@@ -308,13 +318,10 @@ def compute_dense_spatial_contrastive_loss(emb, dist_edge_index, dist_edge_weigh
     graph_nei = torch.clamp(graph_nei, max=1.0)
     graph_neg = 1.0 - graph_nei
 
-    emb_norm = F.normalize(emb, p=2, dim=1, eps=1e-8)
-    sim_mat = torch.matmul(emb_norm, emb_norm.T)
-    sim_mat = sim_mat - torch.diag_embed(torch.diag(sim_mat))
-    sim_prob = torch.sigmoid(sim_mat)
+    sim_mat = torch.sigmoid(cosine_similarity_matrix(emb))
 
-    neigh_loss = torch.mul(graph_nei, torch.log(sim_prob + 1e-10)).mean()
-    neg_loss = torch.mul(graph_neg, torch.log(1.0 - sim_prob + 1e-10)).mean()
+    neigh_loss = torch.mul(graph_nei, torch.log(sim_mat + 1e-10)).mean()
+    neg_loss = torch.mul(graph_neg, torch.log(1.0 - sim_mat + 1e-10)).mean()
     return -(neigh_loss + neg_loss) / 2.0
 
 
@@ -399,7 +406,7 @@ class Model2_HierarchicalSMART(nn.Module):
         self.enc_dist = SAGEEncoderBlock(in_rna_dim, out_dim)
         self.enc_mod2 = SAGEEncoderBlock(in_mod2_dim, out_dim)
 
-        self.fusion1 = nn.Sequential(nn.Linear(2 * out_dim, out_dim), nn.ReLU())
+        self.fusion1 = nn.Sequential(nn.Linear(2 * out_dim, out_dim))
         self.fusion2 = nn.Linear(2 * out_dim, out_dim)
 
         self.dec_sim = SAGEDecoderBlock(out_dim, in_rna_dim)
@@ -436,7 +443,7 @@ class Model3_ContrastiveSMART(nn.Module):
         self.enc_dist = SAGEEncoderBlock(in_rna_dim, out_dim)
         self.enc_mod2 = SAGEEncoderBlock(in_mod2_dim, out_dim)
 
-        self.fusion1 = nn.Sequential(nn.Linear(2 * out_dim, out_dim), nn.ReLU())
+        self.fusion1 = nn.Sequential(nn.Linear(2 * out_dim, out_dim))
         self.fusion2 = nn.Linear(2 * out_dim, out_dim)
 
         self.dec_shared = nn.Sequential(nn.Linear(out_dim, 128), nn.ReLU())
@@ -475,7 +482,7 @@ class Model4_HighDimSMART(nn.Module):
         self.enc_dist = SAGEEncoderBlock(in_rna_dim, out_dim)
         self.enc_mod2 = SAGEEncoderBlock(in_mod2_dim, out_dim)
 
-        self.fusion1 = nn.Sequential(nn.Linear(2 * out_dim, out_dim), nn.ReLU())
+        self.fusion1 = nn.Sequential(nn.Linear(2 * out_dim, out_dim))
         self.fusion2 = nn.Linear(2 * out_dim, out_dim)
 
         self.dec_shared = nn.Sequential(nn.Linear(out_dim, hidden_dim), nn.ReLU())
@@ -503,34 +510,60 @@ class Model4_HighDimSMART(nn.Module):
 # ----------------- Model 5: Full ARISE -----------------
 class Model5_FullARISE(nn.Module):
     """
-    M5: Full ARISE Architecture
+    M5: Full ARISE Architecture (Exact DualGCN & Dual model from reference ARISE)
     - Input: Raw 3000 HVGs directly
     - Backbone: Spectral GCNConv layers
-    - Hierarchical 2-stage MLP fusion
+    - Hierarchical 2-stage MLP fusion without non-linear clipping on stage 1
     - Global dense spatial contrastive BCE loss
     - Direct multi-target raw feature reconstruction
+    - Parameter L1/L2 regularization
+    - Cluster layer parameter
     """
-    def __init__(self, in_channels, q, hidden_channels=512, out_channels=64, dropout=0.0):
+    def __init__(self, in_channels, q, hidden_channels=512, out_channels=64, num_clusters=10,
+                 beta=25.0, gamma=10.0, delta=1.0, dropout=0.0,
+                 l1_lambda=1e-4, l2_lambda=1e-3):
         super().__init__()
+        self.in_channels = in_channels
+        self.q = q
+        self.hidden_channels = hidden_channels
+        self.out_channels = out_channels
+        self.num_clusters = num_clusters
+        self.beta = beta
+        self.gamma = gamma
+        self.delta = delta
+        self.dropout = dropout
+        self.l1_lambda = l1_lambda
+        self.l2_lambda = l2_lambda
+
+        # RNA stream: similarity-based and distance-based GCN branches
         self.x_RNA1 = GCNConv(in_channels, hidden_channels)
         self.x_RNA2 = GCNConv(in_channels, hidden_channels)
+
+        # ADT stream: initial embedding
         self.protein3 = GCNConv(q, out_channels)
 
+        # Project RNA branches to embedding space
         self.sim_conv = GCNConv(hidden_channels, out_channels)
         self.dist_conv = GCNConv(hidden_channels, out_channels)
 
-        self.fusion_layer1 = nn.Sequential(nn.Linear(2 * out_channels, out_channels), nn.ReLU())
-        self.fusion_layer2 = nn.Linear(2 * out_channels, out_channels)
+        # Fusion layers (exact ARISE: NO ReLU in fusion_layer1 or fusion_layer2)
+        self.fusion_layer1 = nn.Sequential(nn.Linear(2 * out_channels, out_channels))
+        self.fusion_layer2 = nn.Sequential(nn.Linear(2 * out_channels, out_channels))
 
-        self.dropout = dropout
-        self.deconv1 = nn.Sequential(nn.Linear(out_channels, hidden_channels), nn.ReLU())
+        # Decoder layers for reconstruction
+        self.deconv1 = nn.Linear(out_channels, hidden_channels)
         self.deconv2 = nn.Linear(hidden_channels, in_channels)
         self.deconv4 = nn.Linear(hidden_channels, q)
-        self.deconv5 = nn.Linear(hidden_channels, in_channels + q)
+        self.deconv5 = nn.Linear(hidden_channels, q + in_channels)
+
+        # Cluster parameter layer
+        self.cluster_layer = nn.Parameter(torch.Tensor(num_clusters, out_channels))
+        nn.init.xavier_uniform_(self.cluster_layer.data)
 
     def forward(self, x_rna, x_adt, e_sim, w_sim, e_dist, w_dist, e_common, w_common):
         xs = F.relu(self.x_RNA1(x_rna, e_sim, w_sim))
         xs = F.dropout(xs, self.dropout, training=self.training)
+
         xd = F.relu(self.x_RNA2(x_rna, e_dist, w_dist))
         xd = F.dropout(xd, self.dropout, training=self.training)
 
@@ -538,15 +571,39 @@ class Model5_FullARISE(nn.Module):
         x_dist = self.dist_conv(xd, e_dist, w_dist)
         pro = self.protein3(x_adt, e_common, w_common)
 
-        fused = self.fusion_layer1(torch.cat([x_sim, x_dist], dim=1))
-        fused_pro = self.fusion_layer2(torch.cat([fused, pro], dim=1))
+        combined = torch.cat([x_sim, x_dist], dim=1)
+        fused = self.fusion_layer1(combined)
 
-        rec_sim = self.deconv2(self.deconv1(x_sim))
-        rec_dist = self.deconv2(self.deconv1(x_dist))
-        rec_pro = self.deconv4(self.deconv1(pro))
-        rec_joint = self.deconv5(self.deconv1(fused_pro))
+        combined_protein = torch.cat([fused, pro], dim=1)
+        fused_pro = self.fusion_layer2(combined_protein)
 
-        return fused_pro, fused, x_sim, x_dist, pro, rec_joint, rec_sim, rec_dist, rec_pro
+        return x_sim, x_dist, fused, fused_pro, pro
+
+    def reconstruct(self, z):
+        return self.deconv2(F.relu(self.deconv1(z)))
+
+    def reconstruct2(self, z):
+        return self.deconv4(F.relu(self.deconv1(z)))
+
+    def reconstruct3(self, z):
+        return self.deconv5(F.relu(self.deconv1(z)))
+
+    def compute_regularization_loss(self):
+        l1_loss = sum(torch.sum(torch.abs(p)) for p in self.parameters())
+        l2_loss = sum(torch.sum(p ** 2) for p in self.parameters())
+        return self.l1_lambda * l1_loss + self.l2_lambda * l2_loss
+
+    def compute_losses(self, x_rna, x_adt, sim_z, dist_z, fused_z, fused_pro, combined_raw, pro, dist_edge_index, dist_edge_weight):
+        l_rec = F.mse_loss(combined_raw, self.reconstruct3(fused_pro))
+        l_sim = F.mse_loss(x_rna, self.reconstruct(sim_z))
+        l_dist = F.mse_loss(x_rna, self.reconstruct(dist_z))
+        l_adt = F.mse_loss(x_adt, self.reconstruct2(pro))
+
+        l_spatial = compute_dense_spatial_contrastive_loss(fused_z, dist_edge_index, dist_edge_weight)
+        reg_loss = self.compute_regularization_loss()
+
+        total_loss = self.beta * (l_rec + l_sim + l_dist + l_adt) + self.gamma * l_spatial + self.delta * reg_loss
+        return total_loss, l_rec
 
 
 # ===========================================================================
@@ -698,44 +755,61 @@ def train_and_evaluate_model(
             final_emb = final_emb.cpu().numpy()
 
     elif model_id == "M5":
-        model = Model5_FullARISE(in_channels=rna_raw.shape[1], q=mod2_raw.shape[1]).to(dev)
+        model = Model5_FullARISE(
+            in_channels=rna_raw.shape[1],
+            q=mod2_raw.shape[1],
+            num_clusters=n_clusters,
+            beta=25.0,
+            gamma=10.0,
+            delta=1.0,
+            dropout=0.0
+        ).to(dev)
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        joint_raw = torch.cat([rna_raw, mod2_raw], dim=1)
+        model.train()
+        combined_raw = torch.cat([rna_raw, mod2_raw], dim=1)
 
         best_sil = -1.0
         best_emb = None
+        best_labels = None
 
         for epoch in range(epochs_arise):
-            model.train()
             optimizer.zero_grad()
-            fused_pro, fused, xs, xd, pro, rec_joint, rec_sim, rec_dist, rec_pro = model(
+            sim_z, dist_z, fused_z, fused_pro, pro = model(
                 rna_raw, mod2_raw, e_sim, w_sim, e_dist, w_dist, e_com, w_com
             )
 
-            loss_rec = F.mse_loss(joint_raw, rec_joint) + F.mse_loss(rna_raw, rec_sim) + F.mse_loss(rna_raw, rec_dist) + F.mse_loss(mod2_raw, rec_pro)
-            loss_spatial = compute_dense_spatial_contrastive_loss(fused, e_dist, w_dist)
-            loss = 25.0 * loss_rec + 10.0 * loss_spatial
+            loss, l_rec = model.compute_losses(
+                rna_raw, mod2_raw,
+                sim_z, dist_z, fused_z, fused_pro, combined_raw, pro,
+                e_dist, w_dist
+            )
             loss.backward()
             optimizer.step()
 
-            # Periodic silhouette tracking
-            if (epoch + 1) % 10 == 0 or epoch == epochs_arise - 1:
-                model.eval()
-                with torch.no_grad():
-                    curr_emb, _, _, _, _, _, _, _, _ = model(rna_raw, mod2_raw, e_sim, w_sim, e_dist, w_dist, e_com, w_com)
-                    curr_emb = curr_emb.cpu().numpy()
-                km = KMeans(n_clusters=n_clusters, random_state=42, n_init=5)
-                labels = km.fit_predict(curr_emb)
-                sil = silhouette_score(curr_emb, labels)
-                if sil > best_sil:
-                    best_sil = sil
-                    best_emb = curr_emb.copy()
+            # Canonical ARISE silhouette tracking: evaluated every single epoch
+            model.eval()
+            with torch.no_grad():
+                _, _, _, eval_fused_pro, _ = model(
+                    rna_raw, mod2_raw, e_sim, w_sim, e_dist, w_dist, e_com, w_com
+                )
+                curr_emb = eval_fused_pro.cpu().numpy()
+
+            km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+            epoch_labels = km.fit_predict(curr_emb)
+            sil = silhouette_score(curr_emb, epoch_labels)
+
+            if sil > best_sil:
+                best_sil = sil
+                best_emb = curr_emb.copy()
+                best_labels = epoch_labels.copy()
 
         final_emb = best_emb if best_emb is not None else curr_emb
+        pred_labels = best_labels
 
     # ------------------ Clustering and Metric Evaluation ------------------
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-    pred_labels = kmeans.fit_predict(final_emb)
+    if 'pred_labels' not in locals() or pred_labels is None:
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        pred_labels = kmeans.fit_predict(final_emb)
 
     y_true = np.array(true_labels).astype(str)
     y_pred = pred_labels.astype(str)
