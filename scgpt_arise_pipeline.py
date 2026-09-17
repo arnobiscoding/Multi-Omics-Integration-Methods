@@ -378,7 +378,7 @@ class scGPTDualGCN(nn.Module):
         pro = self.protein3(x_ADT, common_edge_index, common_edge_weight)
 
         # 3. scGPT Encoding over Spatial Graph
-        x_scgpt = F.relu(self.scgpt_conv(x_scGPT, dist_edge_index, dist_edge_weight))
+        x_scgpt = self.scgpt_conv(x_scGPT, dist_edge_index, dist_edge_weight)
 
         # 4. 3-Stage Hierarchical Linear Fusion
         # Stage 1: Geometric RNA fusion
@@ -585,8 +585,6 @@ def train_scgpt_arise(model: scGPTDual, data: DualGraphData, args, true_labels: 
     return model, best_embeddings, best_labels, loss_history
 
 
-# ===========================================================================
-# 7. TRI-ALGORITHM CLUSTERING & BENCHMARK SUITE
 # ===========================================================================
 # 7. CLUSTERING EVALUATION SUITE
 # ===========================================================================
