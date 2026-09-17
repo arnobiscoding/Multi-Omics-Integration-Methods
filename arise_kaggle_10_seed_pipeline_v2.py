@@ -780,7 +780,7 @@ def train_model(model, data, args ,true_labels):
     best_labels = None
 
     for epoch in range(args.epochs):
-        model.train()
+        
         optimizer.zero_grad()
 
         sim_z, dist_z, fused_z, fused_pro, pro = model(
