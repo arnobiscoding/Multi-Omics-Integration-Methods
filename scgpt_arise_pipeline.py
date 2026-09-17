@@ -588,53 +588,8 @@ def train_scgpt_arise(model: scGPTDual, data: DualGraphData, args, true_labels: 
 # ===========================================================================
 # 7. TRI-ALGORITHM CLUSTERING & BENCHMARK SUITE
 # ===========================================================================
-def run_mclust(data_matrix: np.ndarray, n_clusters: int, seed: int = 2024, max_dims: int = 30) -> np.ndarray:
-    """Run mclust via rpy2 with graceful fallback to KMeans."""
-    data_mat = np.array(data_matrix, dtype=np.float64)
-    if data_mat.shape[1] > max_dims:
-        n_comps = min(max_dims, data_mat.shape[0] - 1, data_mat.shape[1])
-        pca_model = PCA(n_components=n_comps, random_state=seed)
-        data_mat = pca_model.fit_transform(data_mat)
-
-    try:
-        import rpy2.robjects as robjects
-        from rpy2.robjects import numpy2ri
-        numpy2ri.activate()
-        robjects.r.library("mclust")
-        r_code = '''
-        run_mclust_native <- function(mat, n_clusters, seed) {
-            suppressPackageStartupMessages(library(mclust))
-            set.seed(seed)
-            mat <- as.matrix(mat)
-            dimnames(mat) <- NULL
-            res <- Mclust(mat, G=n_clusters, modelNames="EEE")
-            if (is.null(res)) { res <- Mclust(mat, G=n_clusters) }
-            return(as.integer(res$classification))
-        }
-        '''
-        robjects.r(r_code)
-        robjects.globalenv['tmp_mat'] = numpy2ri.numpy2rpy(data_mat)
-        res = robjects.r(f'run_mclust_native(tmp_mat, {n_clusters}, {seed})')
-        return np.array(res).astype(str)
-    except Exception:
-        km = KMeans(n_clusters=n_clusters, random_state=seed, n_init=10)
-        return km.fit_predict(data_mat).astype(str)
-
-
-def search_leiden_resolution(adata: ad.AnnData, n_clusters: int, use_rep: str = 'scGPT_ARISE') -> float:
-    """Search resolution to match target ground truth cluster count."""
-    sc.pp.neighbors(adata, n_neighbors=15, use_rep=use_rep)
-    for res in np.arange(0.1, 2.5, 0.02):
-        res = round(res, 3)
-        try:
-            sc.tl.leiden(adata, resolution=res, random_state=0)
-            if adata.obs['leiden'].nunique() == n_clusters:
-                return res
-        except Exception:
-            pass
-    return 0.5
-
-
+# 7. CLUSTERING EVALUATION SUITE
+# ===========================================================================
 def evaluate_cluster_performance(y_true_series: pd.Series, y_pred_series: pd.Series, features: np.ndarray) -> Dict[str, float]:
     """Compute 8 standardized clustering metrics."""
     mask = (y_true_series != 'Exclude') & (y_true_series != 'unknown') & (y_true_series.notna())
@@ -905,29 +860,17 @@ def main():
                 model, graph_data, args, adata_rna.obs['ground_truth']
             )
 
-            # Downstream Multi-Clustering Evaluation
-            # 1. KMeans
+            # Downstream Evaluation (KMeans Clustering)
             kmeans_metrics = evaluate_cluster_performance(
                 adata_rna.obs['ground_truth'], pd.Series(final_labels, index=adata_rna.obs_names), final_embeddings
             )
-            # 2. Leiden
-            adata_eval = adata_rna.copy()
-            adata_eval.obsm['scGPT_ARISE'] = final_embeddings
-            res = search_leiden_resolution(adata_eval, args.num_clusters)
-            sc.tl.leiden(adata_eval, resolution=res, random_state=0)
-            leiden_metrics = evaluate_cluster_performance(
-                adata_eval.obs['ground_truth'], adata_eval.obs['leiden'], final_embeddings
-            )
-            # 3. mclust
-            mclust_labels = run_mclust(final_embeddings, args.num_clusters, seed=seed)
-            mclust_metrics = evaluate_cluster_performance(
-                adata_rna.obs['ground_truth'], pd.Series(mclust_labels, index=adata_rna.obs_names), final_embeddings
-            )
 
-            for alg_name, metrics in [('KMeans', kmeans_metrics), ('Leiden', leiden_metrics), ('mclust', mclust_metrics)]:
-                row = {'dataset': dataset_name, 'seed': seed, 'cluster alg': alg_name}
-                row.update(metrics)
-                all_results.append(row)
+            res_dict = {
+                'dataset': dataset_name,
+                'seed': seed,
+            }
+            res_dict.update(kmeans_metrics)
+            all_results.append(res_dict)
 
             print(f"\nResult for dataset: {dataset_name} | seed: {seed}")
             print(f"ARI: {kmeans_metrics['ARI']:.4f} | NMI: {kmeans_metrics['NMI']:.4f} | Silhouette: {kmeans_metrics['Silhouette']:.4f}")
