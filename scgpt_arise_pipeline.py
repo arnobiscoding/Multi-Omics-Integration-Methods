@@ -669,7 +669,7 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--epochs', type=int, default=350)
     parser.add_argument('--seeds', nargs='+', type=int, default=[42, 1234, 2024])
-    parser.add_argument('--dataset_indices', nargs='+', type=int, default=[0])
+    parser.add_argument('--dataset_indices', nargs='+', type=int, default=[0,1,2,3,4,5])
     parser.add_argument('--dry_run', action='store_true', help="Execute dry run using simulated data")
     parser.add_argument('--output_dir', type=str, default=None)
 
