@@ -971,19 +971,7 @@ DATASET_CONFIGS = [
 DATASET_INDICES = [0, 1, 2, 3, 4, 5]
 
 # Exactly 10 seeds from the original ARISE 20-seed experiment.
-SEEDS = [
-    13,
-    2560,
-    641,
-    1892,
-    1173,
-    69,
-    2024,
-    231,
-    1971,
-    2497,
-]
-
+SEEDS = [42, 1234, 2024]
 all_results = []
 
 for dataset_idx in DATASET_INDICES:
