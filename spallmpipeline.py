@@ -83,8 +83,23 @@ import random
 import json
 import time
 import argparse
+import warnings
 import urllib.request
 import urllib.error
+
+# Suppress noisy and deprecation warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="torchtext")
+warnings.filterwarnings("ignore", category=UserWarning, module="scgpt")
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", message=".*Variable names are not unique.*")
+warnings.filterwarnings("ignore", message=".*zero-centering a sparse array.*")
+warnings.filterwarnings("ignore", message=".*Setting element.*of view.*")
+try:
+    import torchtext
+    if hasattr(torchtext, "disable_torchtext_deprecation_warning"):
+        torchtext.disable_torchtext_deprecation_warning()
+except Exception:
+    pass
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
@@ -506,7 +521,8 @@ def sparse_mx_to_torch_sparse_tensor(sparse_mx):
     """Convert scipy sparse matrix to torch sparse tensor."""
     sparse_mx = sparse_mx.tocoo().astype(np.float32)
     indices = torch.from_numpy(np.vstack((sparse_mx.row, sparse_mx.col)).astype(np.int64))
-    return torch.sparse.FloatTensor(indices, torch.from_numpy(sparse_mx.data), torch.Size(sparse_mx.shape))
+    values = torch.from_numpy(sparse_mx.data)
+    return torch.sparse_coo_tensor(indices, values, torch.Size(sparse_mx.shape), dtype=torch.float32)
 
 def adjacent_matrix_preprocessing(adata_omics1, adata_omics2, adj_emb):
     """Preprocess spatial and feature adjacency matrices for GNNs."""
@@ -553,16 +569,12 @@ def run_mclust(data_matrix, n_clusters, seed=2024, max_dims=30):
         from rpy2.robjects import numpy2ri
         numpy2ri.activate()
         
-        try:
-            robjects.r.library("mclust")
-        except Exception:
-            print("Installing R package 'mclust'...")
-            robjects.r('install.packages("mclust", repos="https://cloud.r-project.org", quiet=TRUE)')
-            robjects.r.library("mclust")
-            
         r_code = '''
+        if (!requireNamespace("mclust", quietly = TRUE)) {
+            install.packages("mclust", repos="https://cloud.r-project.org", quiet=TRUE)
+        }
+        suppressPackageStartupMessages(library(mclust))
         run_mclust_native <- function(mat, n_clusters, seed) {
-            suppressPackageStartupMessages(library(mclust))
             set.seed(seed)
             mat <- as.matrix(mat)
             dimnames(mat) <- NULL
@@ -948,6 +960,7 @@ def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_
     
     print(f"Loading data from: {data_dir}")
     adata_rna = sc.read_h5ad(os.path.join(data_dir, 'adata_RNA.h5ad'))
+    adata_rna.var_names_make_unique()
     
     mod2_filename = None
     for cand in dataset_cfg["mod2_candidates"]:
@@ -958,6 +971,7 @@ def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_
         mod2_filename = dataset_cfg["mod2_candidates"][0]
         
     adata_mod2 = sc.read_h5ad(os.path.join(data_dir, mod2_filename))
+    adata_mod2.var_names_make_unique()
     
     annotation_filename = dataset_cfg["anno_file"]
     annotation_path = os.path.join(data_dir, annotation_filename)
@@ -1306,7 +1320,7 @@ def main(
             for alg, df_alg in df_metrics.groupby("cluster alg"):
                 print(f"\n--- {alg} Performance (Mean ± Std) ---")
                 means = df_alg[numeric_cols].mean()
-                stds = df_alg[numeric_cols].std()
+                stds = df_alg[numeric_cols].std().fillna(0.0)
                 summary_df = pd.DataFrame({"Mean": means, "Std": stds})
                 print(summary_df.to_string())
             print(f"=======================================================\n")
