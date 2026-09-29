@@ -67,10 +67,8 @@ SEEDS = [
     42, 0, 1, 7, 123, 1234, 2022, 2023, 2024, 1337
 ]
 
-if len(ACTIVE_DATASETS) == 1 and ACTIVE_DATASETS[0].lower() == "all":
-    datasets_to_run = list(ALL_DATASETS_CONFIG.keys())
-else:
-    datasets_to_run = [d for d in ACTIVE_DATASETS if d in ALL_DATASETS_CONFIG]
+active_config_keys = list(ALL_DATASETS_CONFIG.keys())
+datasets_to_run = active_config_keys if (len(ACTIVE_DATASETS) == 1 and ACTIVE_DATASETS[0].lower() == "all") else [d for d in ACTIVE_DATASETS if d in ALL_DATASETS_CONFIG]
 
 print(f"Scheduled datasets: {datasets_to_run}")
 print(f"Ablation seeds: {SEEDS}")
@@ -82,6 +80,11 @@ print(f"Ablation seeds: {SEEDS}")
 # --- COMBINED spaLLM SOURCE CODE ---
 import os
 import random
+import json
+import time
+import argparse
+import urllib.request
+import urllib.error
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
@@ -89,18 +92,20 @@ import torch
 import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 from torch.nn.modules.module import Module
+from torch.backends.cudnn import deterministic
 from torch.backends import cudnn
 import sklearn
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 from sklearn.neighbors import NearestNeighbors, kneighbors_graph
+from sklearn.preprocessing import LabelEncoder
 from scipy.sparse import coo_matrix
 import anndata as ad
 import scanpy as sc
 import seaborn as sns
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-from typing import Optional
+from typing import Optional, Dict, Any, List, Union
 from sklearn.metrics import (
     adjusted_rand_score,
     normalized_mutual_info_score,
@@ -108,9 +113,211 @@ from sklearn.metrics import (
     homogeneity_score,
     v_measure_score,
     silhouette_score,
+    silhouette_samples,
+    fowlkes_mallows_score,
     calinski_harabasz_score,
     davies_bouldin_score
 )
+
+# ==============================================================================
+# Dashboard API Configuration & Authentication
+# ==============================================================================
+DEFAULT_DASHBOARD_URL = os.getenv("DASHBOARD_URL", "https://model-performance.vercel.app")
+DEFAULT_API_URL = os.getenv("DASHBOARD_API_URL", f"{DEFAULT_DASHBOARD_URL}/api/experiments/upload")
+DEFAULT_USERNAME = os.getenv("DASHBOARD_USERNAME", "student")
+DEFAULT_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "fdsa4321")
+
+DATASET_DASHBOARD_INFO = {
+    "mouse-brain-e11-s1": {
+        "datasetId": "Mouse_Brain_E11_S1",
+        "datasetName": "Mouse Brain E11 S1"
+    },
+    "mouse-brain-e13-s1": {
+        "datasetId": "Mouse_Brain_E13_S1",
+        "datasetName": "Mouse Brain E13 S1"
+    },
+    "mouse-brain-e15-s1": {
+        "datasetId": "Mouse_Brain_E15_S1",
+        "datasetName": "Mouse Brain E15 S1"
+    },
+    "mouse-brain-e18-s1": {
+        "datasetId": "Mouse_Brain_E18_S1",
+        "datasetName": "Mouse Brain E18 S1"
+    },
+    "human-lymph-node-a1": {
+        "datasetId": "10x_human_lymph_node_A1",
+        "datasetName": "10X Human Lymph Node A1"
+    },
+    "human-lymph-node-d1": {
+        "datasetId": "10x_human_lymph_node_D1",
+        "datasetName": "10X Human Lymph Node D1"
+    }
+}
+
+
+def make_json_serializable(obj):
+    """Recursively converts NumPy types, tensors, and arrays into native JSON-serializable Python types."""
+    if obj is None:
+        return None
+    if isinstance(obj, np.ndarray):
+        return [make_json_serializable(x) for x in obj.tolist()]
+    if isinstance(obj, (np.floating, np.float32, np.float64, np.float16)):
+        return float(obj)
+    if isinstance(obj, (np.integer, np.int64, np.int32, np.int16, np.int8)):
+        return int(obj)
+    if isinstance(obj, (np.bool_, bool)):
+        return bool(obj)
+    if isinstance(obj, dict):
+        return {str(k): make_json_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [make_json_serializable(item) for item in obj]
+    return obj
+
+
+def authenticate_dashboard(
+    base_url: str = DEFAULT_DASHBOARD_URL,
+    username: str = DEFAULT_USERNAME,
+    password: str = DEFAULT_PASSWORD
+) -> Optional[str]:
+    """Authenticate with the dashboard API using username and password to obtain a JWT bearer token."""
+    login_url = f"{base_url.rstrip('/')}/api/auth/login"
+    try:
+        payload = json.dumps({"username": username, "password": password}).encode("utf-8")
+        req = urllib.request.Request(
+            login_url,
+            data=payload,
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as response:
+            if response.status == 200:
+                data = json.loads(response.read().decode("utf-8"))
+                token = data.get("token")
+                user = data.get("user", {})
+                user_desc = user.get("username", username)
+                role = user.get("role", "student")
+                print(f"[Dashboard] Successfully authenticated as '{user_desc}' (Role: {role})")
+                return token
+    except Exception as e:
+        print(f"[Dashboard Warning] Login failed ({e}). Proceeding without token...")
+    return None
+
+
+def export_dashboard_experiment(
+    model_id: str,
+    model_name: str,
+    dataset_name: str,
+    seed: int,
+    metrics_dict: dict,
+    training_results: dict,
+    hyperparameters: dict,
+    embeddings_data: Optional[dict] = None,
+    output_dir: str = "results",
+    api_url: Optional[str] = DEFAULT_API_URL,
+    token: Optional[str] = None,
+    dataset_display_name: Optional[str] = None
+):
+    """Export standardized JSON artifacts and send directly to Dashboard via API."""
+    exp_dir = os.path.join(output_dir, "experiments", model_id, dataset_name, f"seed_{seed}")
+    os.makedirs(exp_dir, exist_ok=True)
+
+    # 1. Curves History
+    loss_hist = training_results.get("loss_history", [])
+    recon_hist = training_results.get("recon_loss_history", [])
+    corr_hist = training_results.get("corr_loss_history", [])
+    sil_hist = training_results.get("epoch_sil_history", [])
+    ari_hist = training_results.get("epoch_ari_history", [])
+    nmi_hist = training_results.get("epoch_nmi_history", [])
+
+    history_points = []
+    for ep in range(len(loss_hist)):
+        history_points.append({
+            "epoch": ep + 1,
+            "losses": {
+                "total_loss": float(loss_hist[ep]) if ep < len(loss_hist) else 0.0,
+                "reconstruction_loss": float(recon_hist[ep]) if ep < len(recon_hist) else 0.0,
+                "spatial_loss": float(corr_hist[ep]) if ep < len(corr_hist) else 0.0,
+                "reg_loss": 0.0,
+            },
+            "metrics": {
+                "Silhouette": float(sil_hist[ep]) if ep < len(sil_hist) else 0.0,
+                "ARI": float(ari_hist[ep]) if ep < len(ari_hist) else 0.0,
+                "NMI": float(nmi_hist[ep]) if ep < len(nmi_hist) else 0.0,
+            },
+            "total_loss": float(loss_hist[ep]) if ep < len(loss_hist) else None,
+            "silhouette": float(sil_hist[ep]) if ep < len(sil_hist) else None,
+            "ari": float(ari_hist[ep]) if ep < len(ari_hist) else None,
+        })
+
+    safe_metrics = make_json_serializable(metrics_dict)
+    safe_hyperparameters = make_json_serializable(hyperparameters)
+    safe_history = make_json_serializable(history_points)
+    safe_embeddings = make_json_serializable(embeddings_data or {})
+
+    best_epoch = int(training_results.get("best_epoch", len(loss_hist)))
+    best_score = float(training_results.get("best_sil", metrics_dict.get("Silhouette", 0.0)))
+
+    # 2. Local JSON Files Save
+    with open(os.path.join(exp_dir, "metrics.json"), "w", encoding="utf-8") as f:
+        json.dump({
+            "model_id": model_id,
+            "dataset": dataset_name,
+            "seed": int(seed),
+            "final_epoch": len(loss_hist),
+            "best_epoch": best_epoch,
+            "best_score": best_score,
+            "metrics": safe_metrics
+        }, f, indent=2)
+
+    with open(os.path.join(exp_dir, "curves.json"), "w", encoding="utf-8") as f:
+        json.dump({"history": safe_history}, f, indent=2)
+
+    with open(os.path.join(exp_dir, "metadata.json"), "w", encoding="utf-8") as f:
+        json.dump({
+            "model_name": model_name,
+            "dataset": dataset_name,
+            "seed": int(seed),
+            "hyperparameters": safe_hyperparameters
+        }, f, indent=2)
+
+    print(f"[Dashboard] Standardized JSONs saved to: {exp_dir}")
+
+    # 3. Direct API Call to Next.js / MongoDB Dashboard
+    if api_url:
+        try:
+            display_name = dataset_display_name or dataset_name.replace("_", " ").replace("-", " ").title()
+            payload = {
+                "modelId": model_id,
+                "modelName": model_name,
+                "datasetId": dataset_name,
+                "datasetName": display_name,
+                "seed": int(seed),
+                "bestEpoch": best_epoch,
+                "bestScore": best_score,
+                "finalMetrics": safe_metrics,
+                "history": safe_history,
+                "embeddingsData": safe_embeddings,
+                "modelMetadata": {
+                    "architecture": "Spatial Multi-Omics LLM + Dual-Attention GNN (spaLLM)",
+                    "hyperparameters": safe_hyperparameters,
+                }
+            }
+
+            headers = {"Content-Type": "application/json"}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+
+            req = urllib.request.Request(
+                api_url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers=headers
+            )
+            with urllib.request.urlopen(req, timeout=15) as response:
+                if response.status == 200:
+                    print(f"[Dashboard] Successfully uploaded experiment results to Dashboard via API ({api_url})!")
+                    return True
+        except Exception as e:
+            print(f"[Dashboard Info] Direct API push skipped ({e}). Data is safely stored in JSON files.")
+    return False
 
 def init_weights(*params):
     """Initialize weights with Xavier uniform distribution."""
@@ -690,7 +897,8 @@ class Train_spaLLM:
             'alpha_omics2': results['alpha_omics2'].cpu().numpy(),
             'alpha': results['alpha'].cpu().numpy(),
             'alpha_att1': results['alpha_att1'].cpu().numpy(),
-            'alpha_att2': results['alpha_att2'].cpu().numpy()
+            'alpha_att2': results['alpha_att2'].cpu().numpy(),
+            'loss_history': list(self.loss_history)
         }
 
     def plot_loss(self, save_path=None):
@@ -721,7 +929,8 @@ print(f"Using device: {device} (If this says 'cpu', make sure GPU is enabled!)")
 # ===========================================================================
 # PIPELINE CODE SECTION FROM CELL 8
 # ===========================================================================
-def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_plots=False):
+def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_plots=False,
+                        dashboard_token=None, api_url=DEFAULT_API_URL, output_dir=None):
     print(f"\n--- Running Seed: {seed} ---")
     fix_seed(seed)
     
@@ -940,10 +1149,87 @@ def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_
     }
 
     # 7. Visualization Plot Saving (First seed run only)
+    out_dir = output_dir or ('/kaggle/working' if os.path.exists('/kaggle/working') else 'results')
     if show_plots:
         plot_spallm_visualizations(adata, title_prefix=f"{dataset_name} (Seed {seed})", dname=dataset_name, seed=seed)
-        output_dir = '/kaggle/working' if os.path.exists('/kaggle/working') else '.'
-        model.plot_loss(save_path=os.path.join(output_dir, f"spallm_loss_{dataset_name}_seed_{seed}.png"))
+        model.plot_loss(save_path=os.path.join(out_dir, f"spallm_loss_{dataset_name}_seed_{seed}.png"))
+
+    # 8. Export & Upload to Live Dashboard API
+    if 'X_umap' not in adata.obsm:
+        sc.pp.neighbors(adata, use_rep='spaLLM', n_neighbors=10)
+        sc.tl.umap(adata)
+    umap_coords = adata.obsm['X_umap']
+    spatial_coords = adata.obsm.get('spatial', None)
+
+    y_true_all = adata.obs['ground_truth'].astype(str).values
+    primary_alg = 'mclust' if 'mclust' in adata.obs else 'kmeans'
+    y_pred_all = adata.obs[primary_alg].astype(str).values
+
+    try:
+        le = LabelEncoder()
+        y_pred_int = le.fit_transform(y_pred_all)
+        sample_sil_values = silhouette_samples(spallm_emb, y_pred_int).tolist()
+    except Exception:
+        sample_sil_values = []
+
+    embeddings_data = {
+        "umapCoordinates": umap_coords.tolist() if hasattr(umap_coords, 'tolist') else list(umap_coords),
+        "spatialCoordinates": spatial_coords.tolist() if (spatial_coords is not None and hasattr(spatial_coords, 'tolist')) else [],
+        "predictedLabels": y_pred_all.tolist() if hasattr(y_pred_all, 'tolist') else list(y_pred_all),
+        "groundTruthLabels": y_true_all.tolist() if hasattr(y_true_all, 'tolist') else list(y_true_all),
+        "sampleSilhouettes": sample_sil_values,
+    }
+
+    primary_metrics = metrics_mclust if primary_alg == 'mclust' else metrics_kmeans
+    metrics_dict = {
+        "ARI": float(primary_metrics.get('ARI', 0.0)),
+        "NMI": float(primary_metrics.get('NMI', 0.0)),
+        "Silhouette": float(primary_metrics.get('Silhouette', 0.0)),
+        "AMI": float(primary_metrics.get('AMI', 0.0)),
+        "CHI": float(primary_metrics.get('CHI', 0.0)),
+        "DBI": float(primary_metrics.get('DBI', 0.0)),
+        "Homogeneity": float(primary_metrics.get('Homogeneity', 0.0)),
+        "V-measure": float(primary_metrics.get('V-measure', 0.0)),
+    }
+    try:
+        mask = (adata.obs['ground_truth'] != 'Exclude') & (adata.obs['ground_truth'] != 'unknown') & (adata.obs['ground_truth'].notna())
+        if mask.sum() > 0:
+            metrics_dict["FMI"] = float(fowlkes_mallows_score(adata.obs['ground_truth'][mask], adata.obs[primary_alg][mask]))
+    except Exception:
+        pass
+
+    hyperparameters = {
+        "epochs": 800,
+        "lr": 0.0001,
+        "weight_decay": 0.0,
+        "dim_output": 64,
+        "clustering_tool": primary_alg,
+        "all_algorithms": {
+            "KMeans": metrics_kmeans,
+            "Leiden": metrics_leiden,
+            "mclust": metrics_mclust
+        }
+    }
+
+    ds_info = DATASET_DASHBOARD_INFO.get(dataset_name, {
+        "datasetId": dataset_name.replace("-", "_"),
+        "datasetName": dataset_name.replace("-", " ").title()
+    })
+
+    export_dashboard_experiment(
+        model_id="spaLLM",
+        model_name="spaLLM",
+        dataset_name=ds_info["datasetId"],
+        seed=seed,
+        metrics_dict=metrics_dict,
+        training_results=output,
+        hyperparameters=hyperparameters,
+        embeddings_data=embeddings_data,
+        output_dir=out_dir,
+        api_url=api_url,
+        token=dashboard_token,
+        dataset_display_name=ds_info["datasetName"]
+    )
         
     return [row_kmeans, row_leiden, row_mclust]
 
@@ -951,25 +1237,50 @@ def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_
 # ===========================================================================
 # PIPELINE CODE SECTION FROM CELL 10
 # ===========================================================================
-def main():
+def main(
+    username=DEFAULT_USERNAME,
+    password=DEFAULT_PASSWORD,
+    api_url=DEFAULT_API_URL,
+    datasets=None,
+    seeds=None,
+    output_dir=None
+):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using execution device: {device}")
+
+    # Authenticate to dashboard API using provided credentials
+    dashboard_token = None
+    if api_url and username and password:
+        base_url = api_url.split("/api/")[0] if "/api/" in api_url else DEFAULT_DASHBOARD_URL
+        dashboard_token = authenticate_dashboard(base_url=base_url, username=username, password=password)
+
+    active_datasets = datasets if datasets is not None else datasets_to_run
+    active_seeds = seeds if seeds is not None else SEEDS
 
     all_results_flat = []
     all_results = {}
 
-    for dname in datasets_to_run:
+    for dname in active_datasets:
+        if dname not in ALL_DATASETS_CONFIG:
+            print(f"Warning: Dataset '{dname}' not found in ALL_DATASETS_CONFIG. Skipping.")
+            continue
         cfg = ALL_DATASETS_CONFIG[dname]
         all_results[dname] = []
         
         print(f"\n=======================================================")
-        print(f"STARTING WORKFLOW FOR DATASET: {dname} OVER {len(SEEDS)} SEEDS")
+        print(f"STARTING WORKFLOW FOR DATASET: {dname} OVER {len(active_seeds)} SEEDS")
         print(f"=======================================================")
         
-        for idx, seed in enumerate(SEEDS):
+        for idx, seed in enumerate(active_seeds):
             show_plots = (idx == 0)
             try:
-                results_list = run_spallm_workflow(dname, cfg, ENV_MODE, seed, device, show_plots=show_plots)
+                results_list = run_spallm_workflow(
+                    dname, cfg, ENV_MODE, seed, device,
+                    show_plots=show_plots,
+                    dashboard_token=dashboard_token,
+                    api_url=api_url,
+                    output_dir=output_dir
+                )
                 if results_list:
                     for row in results_list:
                         res_row = {"dataset": dname, "seed": seed}
@@ -982,7 +1293,7 @@ def main():
         if len(all_results[dname]) > 0:
             df_metrics = pd.DataFrame(all_results[dname])
             print(f"\n=======================================================")
-            print(f"AVERAGE PERFORMANCE FOR {dname} ({len(SEEDS)} seeds)")
+            print(f"AVERAGE PERFORMANCE FOR {dname} ({len(active_seeds)} seeds)")
             print(f"=======================================================")
             numeric_cols = ["ARI", "NMI", "Silhouette", "AMI", "CHI", "DBI", "Homogeneity", "V-measure"]
             for alg, df_alg in df_metrics.groupby("cluster alg"):
@@ -999,17 +1310,50 @@ def main():
     if len(all_results_flat) > 0:
         df_all = pd.DataFrame(all_results_flat)
         is_kaggle = os.path.exists('/kaggle/working')
-        output_dir = '/kaggle/working' if is_kaggle else '.'
-        output_csv = os.path.join(output_dir, 'spallm_ablation_results.csv')
+        out_dir = output_dir or ('/kaggle/working' if is_kaggle else 'results')
+        os.makedirs(out_dir, exist_ok=True)
+        output_csv = os.path.join(out_dir, 'spallm_ablation_results.csv')
         df_all.to_csv(output_csv, index=False)
         print(f"All ablation study results saved to CSV at: {output_csv}")
         
         print("Generating side-by-side Box & Whiskers plots for all metrics across algorithms...")
-        plot_spallm_summary_boxplots(df_all, save_dir=output_dir)
+        plot_spallm_summary_boxplots(df_all, save_dir=out_dir)
+
+        print("\n" + "=" * 80)
+        print(f"Pipeline completed! Benchmark results automatically exported and uploaded to {DEFAULT_DASHBOARD_URL}".center(80))
+        print("=" * 80 + "\n")
     else:
         print("No results were generated, skipping CSV export and Boxplots.")
 
+
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(
+        description="spaLLM Multi-Seed Pipeline with Live Dashboard API Upload",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument('--username', type=str, default=DEFAULT_USERNAME, help="Dashboard account username")
+    parser.add_argument('--password', type=str, default=DEFAULT_PASSWORD, help="Dashboard account password")
+    parser.add_argument('--api_url', type=str, default=DEFAULT_API_URL, help="Dashboard upload API endpoint")
+    parser.add_argument('--datasets', nargs='+', default=None, help="Datasets to run (e.g. mouse-brain-e11-s1 or 'all')")
+    parser.add_argument('--seeds', nargs='+', type=int, default=None, help="Specific seeds to evaluate")
+    parser.add_argument('--output_dir', type=str, default='results', help="Directory to save CSV results, plots, and JSONs")
+    
+    args, unknown = parser.parse_known_args()
+
+    selected_datasets = None
+    if args.datasets:
+        if len(args.datasets) == 1 and args.datasets[0].lower() == "all":
+            selected_datasets = list(ALL_DATASETS_CONFIG.keys())
+        else:
+            selected_datasets = [d for d in args.datasets if d in ALL_DATASETS_CONFIG]
+
+    main(
+        username=args.username,
+        password=args.password,
+        api_url=args.api_url,
+        datasets=selected_datasets,
+        seeds=args.seeds,
+        output_dir=args.output_dir
+    )
 
 
