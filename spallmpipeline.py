@@ -800,7 +800,7 @@ class Train_spaLLM:
                  dim_input=3000, dim_output=64, weight_factors=None):
         self.device = device
         self.data = data.copy()
-        self.embedding = torch.from_numpy(embedding).to(device)
+        self.embedding = torch.as_tensor(embedding, dtype=torch.float32).to(device)
         self.datatype = datatype
         self.random_seed = random_seed
         self.learning_rate = learning_rate
@@ -1057,7 +1057,10 @@ def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_
     
     adata = adata_rna.copy()
     for key, value in output.items():
-        adata.obsm[key] = value
+        if isinstance(value, np.ndarray) and value.ndim >= 2 and value.shape[0] == adata.n_obs:
+            adata.obsm[key] = value
+        else:
+            adata.uns[key] = value
     print("Training complete.")
     
     # 5. Tri-Algorithm Clustering (KMeans, Leiden, mclust) on spaLLM Embedding
@@ -1288,7 +1291,9 @@ def main(
                         all_results[dname].append(res_row)
                         all_results_flat.append(res_row)
             except Exception as e:
+                import traceback
                 print(f"Error processing dataset {dname} with seed {seed}: {e}")
+                traceback.print_exc()
                 
         if len(all_results[dname]) > 0:
             df_metrics = pd.DataFrame(all_results[dname])
