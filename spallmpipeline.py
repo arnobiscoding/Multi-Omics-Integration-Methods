@@ -911,6 +911,7 @@ class Train_spaLLM:
         ax.legend()
         plt.tight_layout()
         if save_path:
+            os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
         try:
             plt.show()
@@ -1153,8 +1154,9 @@ def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_
 
     # 7. Visualization Plot Saving (First seed run only)
     out_dir = output_dir or ('/kaggle/working' if os.path.exists('/kaggle/working') else 'results')
+    os.makedirs(out_dir, exist_ok=True)
     if show_plots:
-        plot_spallm_visualizations(adata, title_prefix=f"{dataset_name} (Seed {seed})", dname=dataset_name, seed=seed)
+        plot_spallm_visualizations(adata, title_prefix=f"{dataset_name} (Seed {seed})", dname=dataset_name, seed=seed, save_dir=out_dir)
         model.plot_loss(save_path=os.path.join(out_dir, f"spallm_loss_{dataset_name}_seed_{seed}.png"))
 
     # 8. Export & Upload to Live Dashboard API
@@ -1341,7 +1343,7 @@ if __name__ == '__main__':
     parser.add_argument('--api_url', type=str, default=DEFAULT_API_URL, help="Dashboard upload API endpoint")
     parser.add_argument('--datasets', nargs='+', default=None, help="Datasets to run (e.g. mouse-brain-e11-s1 or 'all')")
     parser.add_argument('--seeds', nargs='+', type=int, default=None, help="Specific seeds to evaluate")
-    parser.add_argument('--output_dir', type=str, default='results', help="Directory to save CSV results, plots, and JSONs")
+    parser.add_argument('--output_dir', type=str, default=None, help="Directory to save CSV results, plots, and JSONs")
     
     args, unknown = parser.parse_known_args()
 
