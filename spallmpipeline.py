@@ -79,8 +79,20 @@ print(f"Ablation seeds: {SEEDS}")
 # ===========================================================================
 # --- COMBINED spaLLM SOURCE CODE ---
 import os
+import sys
 import random
 import json
+
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+if hasattr(sys.stderr, 'reconfigure'):
+    try:
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 import time
 import argparse
 import warnings
@@ -119,6 +131,7 @@ import anndata as ad
 import scanpy as sc
 import seaborn as sns
 import matplotlib.pyplot as plt
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from tqdm import tqdm
 from typing import Optional, Dict, Any, List, Union
 from sklearn.metrics import (
@@ -805,6 +818,561 @@ def plot_spallm_summary_boxplots(df_all, save_dir=None):
         pass
     plt.close(fig)
 
+
+def export_spot_predictions_csv(adata, dataset_name, seed=0, out_dir="results"):
+    """
+    Exports cell/spot-level spatial coordinates, ground truth annotations, 
+    clustering domains (KMeans, Leiden, mclust), and modality attention weights to CSV.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    coords = adata.obsm.get('spatial', None)
+    
+    pred_data = {
+        'barcode': adata.obs_names.tolist(),
+        'ground_truth': adata.obs.get('ground_truth', 'unknown').astype(str).tolist(),
+        'spaLLM_domain': adata.obs.get('spaLLM_domain', adata.obs.get('domain', '')).astype(str).tolist(),
+    }
+    
+    for alg in ['kmeans', 'leiden', 'mclust']:
+        if alg in adata.obs:
+            pred_data[alg] = adata.obs[alg].astype(str).tolist()
+            
+    if 'mean_rna_attention' in adata.obs:
+        pred_data['mean_rna_attention'] = adata.obs['mean_rna_attention'].tolist()
+    elif 'alpha' in adata.obsm and adata.obsm['alpha'].ndim >= 2:
+        pred_data['mean_rna_attention'] = adata.obsm['alpha'][:, 0].tolist()
+
+    if 'mean_aux_attention' in adata.obs:
+        pred_data['mean_aux_attention'] = adata.obs['mean_aux_attention'].tolist()
+    elif 'alpha' in adata.obsm and adata.obsm['alpha'].ndim >= 2:
+        pred_data['mean_aux_attention'] = adata.obsm['alpha'][:, 1].tolist()
+        
+    if coords is not None and coords.shape[0] == len(adata.obs_names) and coords.shape[1] >= 2:
+        pred_data['spatial_x'] = coords[:, 0].tolist()
+        pred_data['spatial_y'] = coords[:, 1].tolist()
+        
+    df_pred = pd.DataFrame(pred_data)
+    csv_path = os.path.join(out_dir, f"spallm_spot_predictions_{dataset_name}.csv")
+    df_pred.to_csv(csv_path, index=False)
+    print(f"[CSV Saved] Spot-level predictions & attention weights saved to: {csv_path}")
+    return df_pred
+
+
+def compute_and_plot_cross_seed_linearity(
+    df_results=None,
+    out_dir="results",
+    visuals_dir=None,
+    show_plot=False
+):
+    """
+    Computes cross-seed linearity & metric spread diagnostics (ARI & Silhouette) across seeds,
+    tracks them in a CSV, and generates unified side-by-side plots (ARI vs Silhouette).
+    Directly incorporates the functionality from Test.ipynb Cell 0.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    v_dir = visuals_dir or os.path.join(out_dir, "visuals")
+    os.makedirs(v_dir, exist_ok=True)
+
+    # 1. Resolve results DataFrame
+    if df_results is None or len(df_results) == 0:
+        candidates = [
+            os.path.join(out_dir, "spallm_benchmark_results.csv"),
+            os.path.join(out_dir, "spallm_ablation_results.csv"),
+            "results/spallm_benchmark_results.csv",
+            "results/spallm_ablation_results.csv",
+            "spallm_benchmark_results.csv",
+            "spallm_ablation_results.csv"
+        ]
+        csv_fallback = next((p for p in candidates if os.path.exists(p)), None)
+        if csv_fallback is not None:
+            df_results = pd.read_csv(csv_fallback)
+            print(f"[Loaded] Retrieved benchmark rows from: {csv_fallback}")
+        else:
+            print("[Notice] No benchmark results found to compute cross-seed linearity.")
+            return None
+
+    # Filter for primary algorithm if cluster alg column present
+    if 'cluster alg' in df_results.columns:
+        if (df_results['cluster alg'] == 'mclust').any():
+            df_curr = df_results[df_results['cluster alg'] == 'mclust'].copy()
+        elif (df_results['cluster alg'] == 'KMeans').any():
+            df_curr = df_results[df_results['cluster alg'] == 'KMeans'].copy()
+        else:
+            df_curr = df_results.copy()
+    else:
+        df_curr = df_results.copy()
+
+    if len(df_curr) == 0:
+        print("[Notice] Filtered benchmark results are empty.")
+        return None
+
+    unique_datasets = df_curr['dataset'].unique()
+    n_datasets = len(unique_datasets)
+    if n_datasets == 0:
+        return None
+
+    fig, axes = plt.subplots(n_datasets, 2, figsize=(18, 4.8 * n_datasets), squeeze=False)
+
+    print("\n" + "=" * 85)
+    print(" CROSS-SEED LINEARITY & SPREAD DIAGNOSTICS (ARI & SILHOUETTE)")
+    print("=" * 85)
+
+    diagnostics_rows = []
+
+    for idx, d_name in enumerate(unique_datasets):
+        sub_df = df_curr[df_curr['dataset'] == d_name].copy()
+
+        # Format seeds on X-axis as categorical labels to ensure uniform spacing
+        sub_df['seed_str'] = sub_df['seed'].astype(str)
+        seeds_order = sub_df['seed_str'].tolist()
+        x_indices = np.arange(len(seeds_order))
+
+        # -------------------------------------------------------------
+        # Left Subplot: Adjusted Rand Index (ARI) across all seeds
+        # -------------------------------------------------------------
+        ari_vals = sub_df['ARI'].values.astype(float)
+        mean_ari = float(np.mean(ari_vals))
+        std_ari = float(np.std(ari_vals))
+        min_ari = float(np.min(ari_vals))
+        max_ari = float(np.max(ari_vals))
+        range_ari = max_ari - min_ari
+
+        ax_ari = axes[idx, 0]
+        # Line + Marker plot across seeds
+        ax_ari.plot(x_indices, ari_vals, marker='o', markersize=9, linewidth=2.4, color='#1f77b4', label='Seed ARI')
+        # Horizontal reference line for Mean ARI (shows linearity/flatness)
+        ax_ari.axhline(mean_ari, color='#d62728', linestyle='--', linewidth=2.0, label=f'Mean ARI: {mean_ari:.4f}')
+        # Shaded +-1 Std confidence band
+        ax_ari.fill_between(x_indices, mean_ari - std_ari, mean_ari + std_ari, color='#1f77b4', alpha=0.15, label=f'±1σ Band (±{std_ari:.4f})')
+        # Annotate each seed point with its exact value
+        for x_i, y_i in zip(x_indices, ari_vals):
+            ax_ari.annotate(f"{y_i:.3f}", (x_i, y_i), textcoords="offset points", xytext=(0, 9), ha='center', fontsize=9, fontweight='bold', color='#1f77b4')
+
+        ax_ari.set_xticks(x_indices)
+        ax_ari.set_xticklabels([f"Seed {s}" for s in seeds_order], fontsize=10, rotation=25)
+        ax_ari.set_ylabel("Adjusted Rand Index (ARI)", fontsize=11, fontweight='bold')
+        ax_ari.set_title(f"{d_name}\n[ARI Linearity] Mean: {mean_ari:.4f} ± {std_ari:.4f} | Spread (Max-Min): {range_ari:.4f}", fontsize=12, fontweight='bold')
+        ax_ari.grid(True, linestyle=':', alpha=0.6)
+        ax_ari.legend(loc='lower right', fontsize=9)
+        y_pad = max(0.04, range_ari * 0.4)
+        ax_ari.set_ylim([max(0.0, min_ari - y_pad), min(1.0, max_ari + y_pad)])
+
+        # -------------------------------------------------------------
+        # Right Subplot: Silhouette Score across all seeds
+        # -------------------------------------------------------------
+        sil_vals = sub_df['Silhouette'].values.astype(float)
+        mean_sil = float(np.mean(sil_vals))
+        std_sil = float(np.std(sil_vals))
+        min_sil = float(np.min(sil_vals))
+        max_sil = float(np.max(sil_vals))
+        range_sil = max_sil - min_sil
+
+        ax_sil = axes[idx, 1]
+        # Line + Marker plot across seeds
+        ax_sil.plot(x_indices, sil_vals, marker='s', markersize=9, linewidth=2.4, color='#2ca02c', label='Seed Silhouette')
+        # Horizontal reference line for Mean Silhouette
+        ax_sil.axhline(mean_sil, color='#9467bd', linestyle='--', linewidth=2.0, label=f'Mean Sil: {mean_sil:.4f}')
+        # Shaded +-1 Std confidence band
+        ax_sil.fill_between(x_indices, mean_sil - std_sil, mean_sil + std_sil, color='#2ca02c', alpha=0.15, label=f'±1σ Band (±{std_sil:.4f})')
+        # Annotate each seed point with its exact value
+        for x_i, y_i in zip(x_indices, sil_vals):
+            ax_sil.annotate(f"{y_i:.3f}", (x_i, y_i), textcoords="offset points", xytext=(0, 9), ha='center', fontsize=9, fontweight='bold', color='#2ca02c')
+
+        ax_sil.set_xticks(x_indices)
+        ax_sil.set_xticklabels([f"Seed {s}" for s in seeds_order], fontsize=10, rotation=25)
+        ax_sil.set_ylabel("Silhouette Score", fontsize=11, fontweight='bold')
+        ax_sil.set_title(f"{d_name}\n[Silhouette Linearity] Mean: {mean_sil:.4f} ± {std_sil:.4f} | Spread (Max-Min): {range_sil:.4f}", fontsize=12, fontweight='bold')
+        ax_sil.grid(True, linestyle=':', alpha=0.6)
+        ax_sil.legend(loc='lower right', fontsize=9)
+        y_pad_sil = max(0.04, range_sil * 0.4)
+        ax_sil.set_ylim([max(-1.0, min_sil - y_pad_sil), min(1.0, max_sil + y_pad_sil)])
+
+        # Detailed Linearity Diagnostic
+        print(f"Dataset: {d_name:<30} | Seeds Tested: {len(seeds_order)}")
+        print(f"   * ARI Spread        -> Mean: {mean_ari:.4f} | Std: {std_ari:.4f} | Min: {min_ari:.4f} | Max: {max_ari:.4f} | Spread (Max-Min): {range_ari:.4f}")
+        print(f"   * Silhouette Spread -> Mean: {mean_sil:.4f} | Std: {std_sil:.4f} | Min: {min_sil:.4f} | Max: {max_sil:.4f} | Spread (Max-Min): {range_sil:.4f}")
+        if range_ari <= 0.03:
+            verdict = "Ultra-stable flat line (Near-zero variance, high seed independence)."
+        elif range_ari <= 0.06:
+            verdict = "Near-linear trajectory across seeds (Good stability)."
+        else:
+            verdict = f"Noticeable variation across seeds ({range_ari*100:.1f}% spread)."
+        print(f"   >> Linearity Verdict : {verdict}")
+
+        if 'NMI' in sub_df.columns:
+            nmi_vals = sub_df['NMI'].values.astype(float)
+            mean_nmi = float(np.mean(nmi_vals))
+            std_nmi = float(np.std(nmi_vals))
+            range_nmi = float(np.max(nmi_vals) - np.min(nmi_vals))
+        else:
+            mean_nmi, std_nmi, range_nmi = None, None, None
+
+        diagnostics_rows.append({
+            "dataset": d_name,
+            "seeds_tested": len(seeds_order),
+            "mean_ari": round(mean_ari, 4),
+            "std_ari": round(std_ari, 4),
+            "min_ari": round(min_ari, 4),
+            "max_ari": round(max_ari, 4),
+            "range_ari": round(range_ari, 4),
+            "mean_silhouette": round(mean_sil, 4),
+            "std_silhouette": round(std_sil, 4),
+            "min_silhouette": round(min_sil, 4),
+            "max_silhouette": round(max_sil, 4),
+            "range_silhouette": round(range_sil, 4),
+            "mean_nmi": round(mean_nmi, 4) if mean_nmi is not None else np.nan,
+            "std_nmi": round(std_nmi, 4) if std_nmi is not None else np.nan,
+            "range_nmi": round(range_nmi, 4) if range_nmi is not None else np.nan,
+            "linearity_verdict": verdict
+        })
+
+    # Save Cross-Seed Linearity Diagnostics to CSV
+    df_diag = pd.DataFrame(diagnostics_rows)
+    diag_csv_path = os.path.join(out_dir, "spallm_cross_seed_linearity_diagnostics.csv")
+    df_diag.to_csv(diag_csv_path, index=False)
+    print(f"\n[CSV Saved] Cross-seed linearity diagnostics saved to: {diag_csv_path}")
+
+    # Unified plot saving
+    plt.tight_layout(rect=[0, 0, 1, 0.985])
+    plt.subplots_adjust(top=0.96, hspace=0.35)
+    plt.suptitle("spaLLM: Side-by-Side Cross-Seed Linearity & Spread Diagnostics (ARI & Silhouette)", fontsize=16, fontweight='bold', y=0.995)
+    save_path = os.path.join(v_dir, "spallm_cross_seed_linearity.png")
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"[Saved] Unified cross-seed linearity figure saved to: {save_path}")
+    if v_dir != out_dir:
+        plt.savefig(os.path.join(out_dir, "spallm_cross_seed_linearity.png"), dpi=300, bbox_inches='tight')
+
+    if show_plot:
+        try:
+            plt.show()
+        except Exception:
+            pass
+    plt.close(fig)
+    return df_diag
+
+
+def plot_spallm_spatial_domains_and_attention(
+    loaded_adatas=None,
+    df_results=None,
+    save_dir=None,
+    visuals_dir=None,
+    show_plot=False
+):
+    """
+    Side-by-Side Spatial Domain & Attention Map Visualization for ALL Datasets (Unified Figure).
+    Directly incorporates the functionality from Test.ipynb Cell 1.
+    """
+    out_dir = save_dir or ('/kaggle/working' if os.path.exists('/kaggle/working') else 'results')
+    v_dir = visuals_dir or os.path.join(out_dir, "visuals")
+    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(v_dir, exist_ok=True)
+
+    adatas_dict = loaded_adatas.copy() if loaded_adatas is not None else {}
+
+    # Check if AnnData needs to be loaded from disk
+    if len(adatas_dict) == 0:
+        for d_name in ALL_DATASETS_CONFIG.keys():
+            search_paths = [
+                os.path.join(out_dir, f"spallm_adata_{d_name}.h5ad"),
+                os.path.join(out_dir, "results", f"spallm_adata_{d_name}.h5ad"),
+                os.path.join("results", f"spallm_adata_{d_name}.h5ad"),
+                os.path.join(out_dir, f"DualGate_DEC_adata_{d_name}.h5ad"),
+                os.path.join("results", f"DualGate_DEC_adata_{d_name}.h5ad"),
+            ]
+            for p in search_paths:
+                if os.path.exists(p):
+                    try:
+                        adatas_dict[d_name] = sc.read_h5ad(p)
+                        break
+                    except Exception:
+                        pass
+
+    if len(adatas_dict) == 0:
+        print("[Notice] No spatial domain AnnData objects available to render. Skipping spatial domain & attention visualization.")
+        return
+
+    valid_datasets = list(adatas_dict.keys())
+    n_datasets = len(valid_datasets)
+
+    print("\n" + "=" * 85)
+    print(f" SPATIAL DOMAIN PARTITIONING & MODALITY ATTENTION VISUALIZATION ({n_datasets} DATASETS)")
+    print("=" * 85)
+
+    fig, axes = plt.subplots(n_datasets, 3, figsize=(21, 5.2 * n_datasets), squeeze=False)
+
+    for row_idx, d_name in enumerate(valid_datasets):
+        adata_plot = adatas_dict[d_name]
+
+        coords = adata_plot.obsm.get('spatial', None)
+        if coords is None:
+            coords = np.zeros((adata_plot.n_obs, 2))
+
+        gt_series = adata_plot.obs.get('ground_truth', None)
+        gt_labels = pd.factorize(gt_series)[0] if gt_series is not None else np.zeros(coords.shape[0])
+
+        domain_col = None
+        for cand in ['spaLLM_domain', 'domain', 'mclust', 'kmeans', 'leiden']:
+            if cand in adata_plot.obs:
+                domain_col = cand
+                break
+        pred_labels = pd.factorize(adata_plot.obs[domain_col])[0] if domain_col else gt_labels
+
+        has_att = 'mean_rna_attention' in adata_plot.obs
+        if not has_att and 'alpha' in adata_plot.obsm and adata_plot.obsm['alpha'].ndim >= 2:
+            mean_att = adata_plot.obsm['alpha'][:, 0]
+            has_att = True
+        elif has_att:
+            mean_att = adata_plot.obs['mean_rna_attention'].values
+        else:
+            mean_att = None
+
+        row_metric_str = ""
+        seed_label = adata_plot.uns.get('selected_seed', None)
+        if df_results is not None and len(df_results) > 0:
+            sub_m = df_results[df_results['dataset'] == d_name]
+            if len(sub_m) > 0:
+                if seed_label is not None and (sub_m['seed'] == seed_label).any():
+                    row_s = sub_m[sub_m['seed'] == seed_label].iloc[0]
+                    row_metric_str = f" (Best ARI Seed: {seed_label} | ARI: {row_s['ARI']:.4f}, Sil: {row_s['Silhouette']:.4f})"
+                else:
+                    top_row = sub_m.sort_values(by='ARI', ascending=False).iloc[0]
+                    row_metric_str = f" (Best ARI Seed: {top_row['seed']} | ARI: {top_row['ARI']:.4f}, Sil: {top_row['Silhouette']:.4f})"
+        elif seed_label is not None:
+            row_metric_str = f" (Seed: {seed_label})"
+
+        # -------------------------------------------------------------
+        # 1. Ground Truth Annotations (Col 0)
+        # -------------------------------------------------------------
+        ax0 = axes[row_idx, 0]
+        is_bg = (gt_labels == -1)
+        if gt_series is not None:
+            is_bg = is_bg | (gt_series == 'unknown') | (gt_series == 'Exclude') | (gt_series.isna())
+        if np.any(is_bg):
+            ax0.scatter(coords[is_bg, 0], coords[is_bg, 1], c='#e0e0e0', s=20, alpha=0.35, label='Unannotated')
+        valid_mask = ~is_bg
+        if np.any(valid_mask):
+            ax0.scatter(coords[valid_mask, 0], coords[valid_mask, 1], c=gt_labels[valid_mask], cmap='tab20', s=20, alpha=0.9)
+        ax0.set_title(f"{d_name}\nGround Truth Annotations", fontsize=12, fontweight='bold')
+        ax0.invert_yaxis()
+        ax0.axis('off')
+
+        # -------------------------------------------------------------
+        # 2. spaLLM Spatial Domains (Col 1)
+        # -------------------------------------------------------------
+        ax1 = axes[row_idx, 1]
+        ax1.scatter(coords[:, 0], coords[:, 1], c=pred_labels, cmap='tab20', s=20, alpha=0.9)
+        ax1.set_title(f"{d_name}\nspaLLM Spatial Domains{row_metric_str}", fontsize=12, fontweight='bold')
+        ax1.invert_yaxis()
+        ax1.axis('off')
+
+        # -------------------------------------------------------------
+        # 3. Spatial Modality Attention Heatmap (Col 2)
+        # -------------------------------------------------------------
+        ax2 = axes[row_idx, 2]
+        if has_att and mean_att is not None:
+            sc_att = ax2.scatter(coords[:, 0], coords[:, 1], c=mean_att, cmap='coolwarm', s=20, vmin=0.0, vmax=1.0, alpha=0.95)
+            cbar = plt.colorbar(sc_att, ax=ax2, fraction=0.046, pad=0.04)
+            cbar.set_label('RNA Attention Weight (1 - Aux Weight)', fontsize=9, fontweight='bold')
+            ax2.set_title(f"{d_name}\nModality Attention Map (RNA vs Aux)", fontsize=12, fontweight='bold')
+        else:
+            ax2.text(0.5, 0.5, "Attention weights not extracted", ha='center', va='center', fontsize=12, color='gray')
+            ax2.set_title(f"{d_name}\nModality Attention Map", fontsize=12, fontweight='bold')
+        ax2.invert_yaxis()
+        ax2.axis('off')
+
+        print(f"Dataset: {d_name:<30} | Cells/Spots: {coords.shape[0]} | Domains Found: {len(np.unique(pred_labels))} | Attention Mapped: {has_att}")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.985])
+    plt.subplots_adjust(top=0.96, hspace=0.35)
+    plt.suptitle("spaLLM: Side-by-Side Spatial Domain Partitioning & Modality Attention Heatmaps across Datasets", fontsize=16, fontweight='bold', y=0.995)
+
+    save_path = os.path.join(v_dir, "spallm_spatial_domains_and_attention.png")
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"\n[Saved] Unified spatial domains & attention map figure ({n_datasets} datasets) saved to: {save_path}")
+    if v_dir != out_dir:
+        plt.savefig(os.path.join(out_dir, "spallm_spatial_domains_and_attention.png"), dpi=300, bbox_inches='tight')
+
+    if show_plot:
+        try:
+            plt.show()
+        except Exception:
+            pass
+    plt.close(fig)
+
+
+def plot_spallm_latent_umap_manifolds(
+    loaded_adatas=None,
+    df_results=None,
+    save_dir=None,
+    visuals_dir=None,
+    show_plot=False
+):
+    """
+    Latent Embedding Manifold Projections (Side-by-Side UMAP Suite for ALL Datasets).
+    Directly incorporates the functionality from Test.ipynb Cell 2.
+    """
+    out_dir = save_dir or ('/kaggle/working' if os.path.exists('/kaggle/working') else 'results')
+    v_dir = visuals_dir or os.path.join(out_dir, "visuals")
+    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(v_dir, exist_ok=True)
+
+    adatas_dict = loaded_adatas.copy() if loaded_adatas is not None else {}
+
+    # Check if AnnData needs to be loaded from disk
+    if len(adatas_dict) == 0:
+        for d_name in ALL_DATASETS_CONFIG.keys():
+            search_paths = [
+                os.path.join(out_dir, f"spallm_adata_{d_name}.h5ad"),
+                os.path.join(out_dir, "results", f"spallm_adata_{d_name}.h5ad"),
+                os.path.join("results", f"spallm_adata_{d_name}.h5ad"),
+                os.path.join(out_dir, f"DualGate_DEC_adata_{d_name}.h5ad"),
+                os.path.join("results", f"DualGate_DEC_adata_{d_name}.h5ad"),
+            ]
+            for p in search_paths:
+                if os.path.exists(p):
+                    try:
+                        adatas_dict[d_name] = sc.read_h5ad(p)
+                        break
+                    except Exception:
+                        pass
+
+    valid_adatas = {}
+    for d_name, adata_curr in adatas_dict.items():
+        has_emb = False
+        for emb_k in ['spaLLM', 'spaLLM_emb', 'DualGate_DEC_emb', 'feat']:
+            if emb_k in adata_curr.obsm:
+                has_emb = True
+                break
+        if has_emb or 'X_umap' in adata_curr.obsm:
+            valid_adatas[d_name] = adata_curr
+
+    if len(valid_adatas) == 0:
+        print("[Notice] No latent embeddings found to compute UMAP. Skipping latent UMAP visualization.")
+        return
+
+    valid_datasets = list(valid_adatas.keys())
+    n_datasets = len(valid_datasets)
+
+    print("\n" + "=" * 85)
+    print(f" LATENT EMBEDDING MANIFOLD VISUALIZATION (UMAP) ({n_datasets} DATASETS - BEST ARI SEED)")
+    print("=" * 85)
+
+    for d_name in valid_datasets:
+        adata_curr = valid_adatas[d_name]
+        if 'X_umap' not in adata_curr.obsm:
+            print(f"   • Computing 2D UMAP projection for {d_name}...")
+            emb_rep = None
+            for cand in ['spaLLM', 'spaLLM_emb', 'DualGate_DEC_emb', 'feat']:
+                if cand in adata_curr.obsm:
+                    emb_rep = cand
+                    break
+            sc.pp.neighbors(adata_curr, use_rep=emb_rep, n_neighbors=15, metric='cosine', random_state=42)
+            sc.tl.umap(adata_curr, min_dist=0.3, spread=1.0, random_state=42)
+
+    fig, axes = plt.subplots(n_datasets, 3, figsize=(21, 5.8 * n_datasets), squeeze=False)
+
+    for row_idx, d_name in enumerate(valid_datasets):
+        adata_plot = valid_adatas[d_name]
+        umap_coords = adata_plot.obsm['X_umap']
+
+        gt_series = adata_plot.obs.get('ground_truth', None)
+        gt_labels = pd.factorize(gt_series)[0] if gt_series is not None else np.zeros(umap_coords.shape[0])
+
+        domain_col = None
+        for cand in ['spaLLM_domain', 'domain', 'mclust', 'kmeans', 'leiden']:
+            if cand in adata_plot.obs:
+                domain_col = cand
+                break
+        pred_labels = pd.factorize(adata_plot.obs[domain_col])[0] if domain_col else gt_labels
+
+        has_att = 'mean_rna_attention' in adata_plot.obs
+        if not has_att and 'alpha' in adata_plot.obsm and adata_plot.obsm['alpha'].ndim >= 2:
+            mean_att = adata_plot.obsm['alpha'][:, 0]
+            has_att = True
+        elif has_att:
+            mean_att = adata_plot.obs['mean_rna_attention'].values
+        else:
+            mean_att = None
+
+        row_metric_str = ""
+        seed_label = adata_plot.uns.get('selected_seed', None)
+        if df_results is not None and len(df_results) > 0:
+            sub_m = df_results[df_results['dataset'] == d_name]
+            if len(sub_m) > 0:
+                if seed_label is not None and (sub_m['seed'] == seed_label).any():
+                    row_s = sub_m[sub_m['seed'] == seed_label].iloc[0]
+                    row_metric_str = f" (Best ARI Seed: {seed_label} | ARI: {row_s['ARI']:.4f}, Sil: {row_s['Silhouette']:.4f})"
+                else:
+                    top_row = sub_m.sort_values(by='ARI', ascending=False).iloc[0]
+                    row_metric_str = f" (Best ARI Seed: {top_row['seed']} | ARI: {top_row['ARI']:.4f} | Sil: {top_row['Silhouette']:.4f})"
+        elif seed_label is not None:
+            row_metric_str = f" (Best ARI Seed: {seed_label})"
+
+        # -------------------------------------------------------------
+        # 1. Ground Truth Annotations in Latent UMAP (Col 0)
+        # -------------------------------------------------------------
+        ax0 = axes[row_idx, 0]
+        is_bg = (gt_labels == -1)
+        if gt_series is not None:
+            is_bg = is_bg | (gt_series == 'unknown') | (gt_series == 'Exclude') | (gt_series.isna())
+        if np.any(is_bg):
+            ax0.scatter(umap_coords[is_bg, 0], umap_coords[is_bg, 1], c='#e0e0e0', s=16, alpha=0.35, label='Unannotated')
+        valid_mask = ~is_bg
+        if np.any(valid_mask):
+            ax0.scatter(umap_coords[valid_mask, 0], umap_coords[valid_mask, 1], c=gt_labels[valid_mask], cmap='tab20', s=22, alpha=0.85)
+        ax0.set_title(f"{d_name}\nLatent UMAP: Ground Truth Annotations", fontsize=12, fontweight='bold')
+        ax0.set_xlabel("UMAP 1", fontsize=10)
+        ax0.set_ylabel("UMAP 2", fontsize=10)
+        ax0.grid(True, linestyle=':', alpha=0.4)
+
+        # -------------------------------------------------------------
+        # 2. spaLLM Discovered Spatial Domains in Latent UMAP (Col 1)
+        # -------------------------------------------------------------
+        ax1 = axes[row_idx, 1]
+        ax1.scatter(umap_coords[:, 0], umap_coords[:, 1], c=pred_labels, cmap='tab20', s=22, alpha=0.85)
+        ax1.set_title(f"{d_name}\nLatent UMAP: spaLLM Domains{row_metric_str}", fontsize=12, fontweight='bold')
+        ax1.set_xlabel("UMAP 1", fontsize=10)
+        ax1.set_ylabel("UMAP 2", fontsize=10)
+        ax1.grid(True, linestyle=':', alpha=0.4)
+
+        # -------------------------------------------------------------
+        # 3. Spatial Modality Attention Heatmap on Latent UMAP (Col 2)
+        # -------------------------------------------------------------
+        ax2 = axes[row_idx, 2]
+        if has_att and mean_att is not None:
+            sc_att = ax2.scatter(umap_coords[:, 0], umap_coords[:, 1], c=mean_att, cmap='coolwarm', s=22, vmin=0.0, vmax=1.0, alpha=0.9)
+            divider = make_axes_locatable(ax2)
+            cax = divider.append_axes("right", size="5%", pad=0.08)
+            cbar = fig.colorbar(sc_att, cax=cax)
+            cbar.set_label('RNA Attention Weight α_rna', fontsize=9, fontweight='bold')
+            ax2.set_title(f"{d_name}\nLatent UMAP: Modality Attention (RNA vs Aux)", fontsize=12, fontweight='bold')
+        else:
+            ax2.text(0.5, 0.5, "Attention weights not extracted", ha='center', va='center', fontsize=12, color='gray')
+            ax2.set_title(f"{d_name}\nLatent UMAP: Modality Attention", fontsize=12, fontweight='bold')
+        ax2.set_xlabel("UMAP 1", fontsize=10)
+        ax2.set_ylabel("UMAP 2", fontsize=10)
+        ax2.grid(True, linestyle=':', alpha=0.4)
+
+        print(f"Dataset: {d_name:<30} | Manifold Spots: {umap_coords.shape[0]} | Clusters: {len(np.unique(pred_labels))} | Attention Mapped: {has_att}")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.985])
+    plt.subplots_adjust(top=0.96, hspace=0.35)
+    plt.suptitle("spaLLM: Latent Embedding Manifold Projections (UMAP) across Datasets (Best ARI Seed)", fontsize=16, fontweight='bold', y=0.995)
+
+    save_path = os.path.join(v_dir, "spallm_latent_umap.png")
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    print(f"\n[Saved] Unified latent UMAP manifold figure saved to: {save_path}")
+    if v_dir != out_dir:
+        plt.savefig(os.path.join(out_dir, "spallm_latent_umap.png"), dpi=300, bbox_inches='tight')
+
+    if show_plot:
+        try:
+            plt.show()
+        except Exception:
+            pass
+    plt.close(fig)
+
+
 # 4. spaLLM_util.py
 class Train_spaLLM:
     def __init__(self, data, embedding, datatype='10x', device=torch.device('cpu'),
@@ -1166,14 +1734,32 @@ def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_
         'resolution': None
     }
 
-    # 7. Visualization Plot Saving (First seed run only)
+    # 7. Modality Attention Weights & Domain Assignment
+    if 'alpha' in output and isinstance(output['alpha'], np.ndarray) and output['alpha'].ndim >= 2:
+        adata.obs['mean_rna_attention'] = output['alpha'][:, 0]
+        adata.obs['mean_aux_attention'] = output['alpha'][:, 1]
+    elif 'alpha' in adata.obsm and adata.obsm['alpha'].ndim >= 2:
+        adata.obs['mean_rna_attention'] = adata.obsm['alpha'][:, 0]
+        adata.obs['mean_aux_attention'] = adata.obsm['alpha'][:, 1]
+    else:
+        adata.obs['mean_rna_attention'] = 0.5
+        adata.obs['mean_aux_attention'] = 0.5
+
+    primary_alg = 'mclust' if 'mclust' in adata.obs else 'kmeans'
+    adata.obs['spaLLM_domain'] = adata.obs[primary_alg].astype(str)
+    adata.obs['domain'] = adata.obs['spaLLM_domain']
+    adata.uns['selected_seed'] = seed
+    adata.obsm['spaLLM_emb'] = spallm_emb
+    adata.obsm['spaLLM'] = spallm_emb
+
+    # 8. Visualization Plot Saving (First seed run only)
     out_dir = output_dir or ('/kaggle/working' if os.path.exists('/kaggle/working') else 'results')
     os.makedirs(out_dir, exist_ok=True)
     if show_plots:
         plot_spallm_visualizations(adata, title_prefix=f"{dataset_name} (Seed {seed})", dname=dataset_name, seed=seed, save_dir=out_dir)
         model.plot_loss(save_path=os.path.join(out_dir, f"spallm_loss_{dataset_name}_seed_{seed}.png"))
 
-    # 8. Export & Upload to Live Dashboard API
+    # 9. Export & Upload to Live Dashboard API
     if 'X_umap' not in adata.obsm:
         sc.pp.neighbors(adata, use_rep='spaLLM', n_neighbors=10)
         sc.tl.umap(adata)
@@ -1181,7 +1767,6 @@ def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_
     spatial_coords = adata.obsm.get('spatial', None)
 
     y_true_all = adata.obs['ground_truth'].astype(str).values
-    primary_alg = 'mclust' if 'mclust' in adata.obs else 'kmeans'
     y_pred_all = adata.obs[primary_alg].astype(str).values
 
     try:
@@ -1250,7 +1835,7 @@ def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_
         dataset_display_name=ds_info["datasetName"]
     )
         
-    return [row_kmeans, row_leiden, row_mclust]
+    return [row_kmeans, row_leiden, row_mclust], adata
 
 
 # ===========================================================================
@@ -1262,10 +1847,64 @@ def main(
     api_url=DEFAULT_API_URL,
     datasets=None,
     seeds=None,
-    output_dir=None
+    output_dir=None,
+    generate_plots=False,
+    results_csv=None
 ):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using execution device: {device}")
+
+    is_kaggle = os.path.exists('/kaggle/working')
+    out_dir = output_dir or ('/kaggle/working' if is_kaggle else 'results')
+    visuals_dir = os.path.join(out_dir, "visuals")
+    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(visuals_dir, exist_ok=True)
+
+    # -------------------------------------------------------------
+    # Plot Generation & Diagnostic CSV Mode (From existing results)
+    # -------------------------------------------------------------
+    if generate_plots:
+        print("\n" + "=" * 85)
+        print(" GENERATING SPALLM PLOTS & TRACKING CSVs FROM EXISTING BENCHMARK DATA")
+        print("=" * 85)
+
+        # 1. Load benchmark CSV
+        df_bench = None
+        if results_csv and os.path.exists(results_csv):
+            df_bench = pd.read_csv(results_csv)
+            print(f"[Loaded] Retrieved benchmark CSV from: {results_csv}")
+        else:
+            candidates = [
+                os.path.join(out_dir, "spallm_benchmark_results.csv"),
+                os.path.join(out_dir, "spallm_ablation_results.csv"),
+                "results/spallm_benchmark_results.csv",
+                "results/spallm_ablation_results.csv",
+                "results/DualGate_DEC_benchmark_results.csv",
+                "results/scgpt_arise_results/scgpt_arise_benchmark_results.csv"
+            ]
+            cand = next((c for c in candidates if os.path.exists(c)), None)
+            if cand:
+                df_bench = pd.read_csv(cand)
+                print(f"[Loaded] Retrieved benchmark CSV from: {cand}")
+
+        if df_bench is not None and len(df_bench) > 0:
+            if 'cluster alg' in df_bench.columns and (df_bench['cluster alg'] == 'mclust').any():
+                df_primary = df_bench[df_bench['cluster alg'] == 'mclust'].copy()
+            else:
+                df_primary = df_bench.copy()
+
+            compute_and_plot_cross_seed_linearity(df_primary, out_dir=out_dir, visuals_dir=visuals_dir)
+            if 'cluster alg' in df_bench.columns:
+                plot_spallm_summary_boxplots(df_bench, save_dir=visuals_dir)
+        else:
+            print("[Warning] No benchmark CSV found to plot linearity diagnostics.")
+
+        plot_spallm_spatial_domains_and_attention(None, df_results=df_bench, save_dir=out_dir, visuals_dir=visuals_dir)
+        plot_spallm_latent_umap_manifolds(None, df_results=df_bench, save_dir=out_dir, visuals_dir=visuals_dir)
+        print("\n" + "=" * 85)
+        print(" PLOT GENERATION COMPLETE")
+        print("=" * 85 + "\n")
+        return
 
     # Authenticate to dashboard API using provided credentials
     dashboard_token = None
@@ -1278,6 +1917,8 @@ def main(
 
     all_results_flat = []
     all_results = {}
+    best_adatas = {}
+    best_aris = {}
 
     for dname in active_datasets:
         if dname not in ALL_DATASETS_CONFIG:
@@ -1293,19 +1934,31 @@ def main(
         for idx, seed in enumerate(active_seeds):
             show_plots = (idx == 0)
             try:
-                results_list = run_spallm_workflow(
+                res = run_spallm_workflow(
                     dname, cfg, ENV_MODE, seed, device,
                     show_plots=show_plots,
                     dashboard_token=dashboard_token,
                     api_url=api_url,
-                    output_dir=output_dir
+                    output_dir=out_dir
                 )
+                if isinstance(res, tuple):
+                    results_list, adata_curr = res
+                else:
+                    results_list, adata_curr = res, None
+
                 if results_list:
                     for row in results_list:
                         res_row = {"dataset": dname, "seed": seed}
                         res_row.update(row)
                         all_results[dname].append(res_row)
                         all_results_flat.append(res_row)
+
+                if adata_curr is not None:
+                    mclust_row = next((r for r in results_list if r.get('cluster alg') == 'mclust'), None)
+                    current_ari = mclust_row['ARI'] if mclust_row else (results_list[0]['ARI'] if results_list else 0.0)
+                    if dname not in best_adatas or current_ari > best_aris.get(dname, -1.0):
+                        best_adatas[dname] = adata_curr
+                        best_aris[dname] = current_ari
             except Exception as e:
                 import traceback
                 print(f"Error processing dataset {dname} with seed {seed}: {e}")
@@ -1327,18 +1980,49 @@ def main(
         else:
             print(f"No evaluation metrics collected for {dname}.")
 
-    # Save all collected metrics to CSV and generate Box & Whiskers plots
+    # Save best AnnData objects and spot-level predictions CSV
+    for dname, b_adata in best_adatas.items():
+        try:
+            adata_save_path = os.path.join(out_dir, f"spallm_adata_{dname}.h5ad")
+            b_adata.write_h5ad(adata_save_path)
+            print(f"Saved best AnnData object to: {adata_save_path}")
+            export_spot_predictions_csv(b_adata, dname, b_adata.uns.get('selected_seed', 0), out_dir)
+        except Exception as e:
+            print(f"Warning: Failed to save AnnData or spot CSV for {dname}: {e}")
+
+    # Save all collected metrics to CSV and generate plots
     if len(all_results_flat) > 0:
         df_all = pd.DataFrame(all_results_flat)
-        is_kaggle = os.path.exists('/kaggle/working')
-        out_dir = output_dir or ('/kaggle/working' if is_kaggle else 'results')
-        os.makedirs(out_dir, exist_ok=True)
+
+        # 1. Save all ablation results (KMeans, Leiden, mclust)
         output_csv = os.path.join(out_dir, 'spallm_ablation_results.csv')
         df_all.to_csv(output_csv, index=False)
         print(f"All ablation study results saved to CSV at: {output_csv}")
+
+        # 2. Extract and save primary benchmark results (mclust by default, fallback to KMeans)
+        if (df_all['cluster alg'] == 'mclust').any():
+            df_benchmark = df_all[df_all['cluster alg'] == 'mclust'].copy()
+        elif (df_all['cluster alg'] == 'KMeans').any():
+            df_benchmark = df_all[df_all['cluster alg'] == 'KMeans'].copy()
+        else:
+            df_benchmark = df_all.copy()
+
+        benchmark_csv = os.path.join(out_dir, 'spallm_benchmark_results.csv')
+        df_benchmark.to_csv(benchmark_csv, index=False)
+        print(f"Primary benchmark results saved to CSV at: {benchmark_csv}")
         
+        # 3. Generate side-by-side Box & Whiskers plots
         print("Generating side-by-side Box & Whiskers plots for all metrics across algorithms...")
-        plot_spallm_summary_boxplots(df_all, save_dir=out_dir)
+        plot_spallm_summary_boxplots(df_all, save_dir=visuals_dir)
+
+        # 4. Cross-Seed Linearity & Spread Diagnostics Suite (CSV + Plot) from Test.ipynb Cell 0
+        compute_and_plot_cross_seed_linearity(df_benchmark, out_dir=out_dir, visuals_dir=visuals_dir)
+
+        # 5. Side-by-Side Spatial Domain & Attention Map Visualization from Test.ipynb Cell 1
+        plot_spallm_spatial_domains_and_attention(best_adatas, df_results=df_benchmark, save_dir=out_dir, visuals_dir=visuals_dir)
+
+        # 6. Latent Embedding Manifold Projections (UMAP) from Test.ipynb Cell 2
+        plot_spallm_latent_umap_manifolds(best_adatas, df_results=df_benchmark, save_dir=out_dir, visuals_dir=visuals_dir)
 
         print("\n" + "=" * 80)
         print(f"Pipeline completed! Benchmark results automatically exported and uploaded to {DEFAULT_DASHBOARD_URL}".center(80))
@@ -1349,7 +2033,7 @@ def main(
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description="spaLLM Multi-Seed Pipeline with Live Dashboard API Upload",
+        description="spaLLM Multi-Seed Pipeline with Live Dashboard API Upload & Test Diagnostics",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument('--username', type=str, default=DEFAULT_USERNAME, help="Dashboard account username")
@@ -1358,6 +2042,8 @@ if __name__ == '__main__':
     parser.add_argument('--datasets', nargs='+', default=None, help="Datasets to run (e.g. mouse-brain-e11-s1 or 'all')")
     parser.add_argument('--seeds', nargs='+', type=int, default=None, help="Specific seeds to evaluate")
     parser.add_argument('--output_dir', type=str, default=None, help="Directory to save CSV results, plots, and JSONs")
+    parser.add_argument('--generate_plots', action='store_true', help="Generate linearity CSV, summary plots, spatial domain/attention maps, and UMAP plots from existing benchmark results without re-training")
+    parser.add_argument('--results_csv', type=str, default=None, help="Path to existing CSV containing benchmark results (for --generate_plots)")
     
     args, unknown = parser.parse_known_args()
 
@@ -1374,7 +2060,10 @@ if __name__ == '__main__':
         api_url=args.api_url,
         datasets=selected_datasets,
         seeds=args.seeds,
-        output_dir=args.output_dir
+        output_dir=args.output_dir,
+        generate_plots=args.generate_plots,
+        results_csv=args.results_csv
     )
+
 
 
