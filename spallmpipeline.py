@@ -504,6 +504,34 @@ def clr_normalize_each_cell(adata: ad.AnnData, inplace=True):
     )
     return adata
 
+def tfidf(X):
+    """TF-IDF normalization following Seurat v3 approach."""
+    idf = X.shape[0] / X.sum(axis=0)
+    tf = X.multiply(1 / X.sum(axis=1)) if sp.issparse(X) else X / X.sum(axis=1, keepdims=True)
+    return tf.multiply(idf) if sp.issparse(X) else tf * idf
+
+def lsi(adata: ad.AnnData, n_components: int = 20, use_highly_variable: Optional[bool] = None, **kwargs):
+    """LSI analysis (Seurat v3 approach) for chromatin accessibility ATAC peak counts."""
+    use_highly_variable = use_highly_variable if use_highly_variable is not None else "highly_variable" in adata.var
+    adata_use = adata[:, adata.var["highly_variable"]] if use_highly_variable else adata
+    n_components = min(n_components, adata_use.shape[0] - 1, adata_use.shape[1] - 1)
+    X_norm = sklearn.preprocessing.Normalizer(norm="l1").fit_transform(tfidf(adata_use.X))
+    X_lsi = sklearn.utils.extmath.randomized_svd(np.log1p(X_norm * 1e4), n_components, **kwargs)[0]
+    adata.obsm["X_lsi"] = (X_lsi - X_lsi.mean(axis=1, keepdims=True)) / X_lsi.std(axis=1, ddof=1, keepdims=True)
+
+def preprocess_atac(adata, adata_rna, n_components=201):
+    """Preprocess ATAC data following MISAR-seq / Seurat v3 approach."""
+    if list(adata.obs_names) != list(adata_rna.obs_names):
+        common_spots = [s for s in adata_rna.obs_names if s in adata.obs_names]
+        if len(common_spots) == adata_rna.n_obs:
+            adata = adata[adata_rna.obs_names].copy()
+    if 'X_lsi' not in adata.obsm:
+        sc.pp.highly_variable_genes(adata, flavor="seurat_v3", n_top_genes=3000)
+        n_lsi = min(n_components, adata.n_obs - 1, adata.n_vars - 1)
+        lsi(adata, use_highly_variable=False, n_components=n_lsi)
+    adata.obsm['feat'] = adata.obsm['X_lsi']
+    return adata
+
 def construct_graph_by_feature(adata_omics1, adata_omics2, k=20, mode="connectivity", metric="correlation"):
     """Construct feature neighbor graphs based on expression profiles."""
     graph_omics1 = kneighbors_graph(adata_omics1.obsm['feat'], k, mode=mode, metric=metric, include_self=False)
@@ -1577,7 +1605,32 @@ def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_
     adata_mod2.var_names_make_unique()
     adata_rna.var['gene_names'] = adata_rna.var.index.str.upper()
     
-    if os.path.exists(model_dir):
+    # Check for precomputed scGPT embedding .npy in data_dir first (matching Lymph_example and MISAR_example)
+    emb_candidates = [
+        "adata2_RNA_embedding.npy",
+        "mRNA_data_embedding.npy",
+        "RNA_embedding.npy",
+        "adata_RNA_embedding.npy",
+        "scgpt_embedding.npy",
+        "cell_embeddings.npy"
+    ]
+    precomputed_emb = None
+    for cand in emb_candidates:
+        cand_p = os.path.join(data_dir, cand)
+        if os.path.exists(cand_p):
+            precomputed_emb = cand_p
+            break
+    if precomputed_emb is None and os.path.isdir(data_dir):
+        for f in os.listdir(data_dir):
+            if f.endswith("embedding.npy") or f.endswith("embeddings.npy"):
+                precomputed_emb = os.path.join(data_dir, f)
+                break
+
+    if precomputed_emb is not None:
+        print(f"Loading precomputed scGPT embeddings from: {precomputed_emb}")
+        embedding = np.load(precomputed_emb)
+        print(f"Loaded embedding shape: {embedding.shape}")
+    elif os.path.exists(model_dir):
         print(f"Running scGPT embedding on GPU using model at: {model_dir}")
         from scgpt.tasks.cell_emb import embed_data
         adata_emb = embed_data(
@@ -1594,48 +1647,59 @@ def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_
         embedding = adata_emb.obsm["X_scGPT"]
         print("scGPT embedding generated successfully.")
     else:
-        print(f"Warning: scGPT model directory '{model_dir}' not found. Generating dummy mock embeddings...")
+        print(f"Warning: Neither precomputed embedding nor scGPT model '{model_dir}' found. Generating dummy mock embeddings...")
         embedding = np.random.normal(size=(adata_rna.n_obs, 512))
         
     # 3. Preprocessing
-    print("Preprocessing RNA data...")
-    sc.pp.filter_genes(adata_rna, min_cells=10)
-    sc.pp.highly_variable_genes(adata_rna, flavor="seurat_v3", n_top_genes=3000)
-    sc.pp.normalize_total(adata_rna, target_sum=1e4)
-    sc.pp.log1p(adata_rna)
-    sc.pp.scale(adata_rna)
-    
-    adata_rna_high = adata_rna[:, adata_rna.var['highly_variable']]
-    
+    datatype_mapping = {
+        "human_lymph_node": "10x",
+        "mouse_brain": "Spatial-epigenome-transcriptome",
+        "SPOTS": "SPOTS",
+        "Stereo-CITE-seq": "Stereo-CITE-seq",
+    }
+    target_datatype = dataset_cfg.get("datatype", datatype_mapping.get(dataset_type, "10x"))
+    print(f"Dataset type: '{dataset_type}' -> spaLLM target datatype: '{target_datatype}'")
+
     if dataset_type == "human_lymph_node":
-        n_comps_rna = adata_mod2.n_vars - 1
+        print("Preprocessing RNA data (Human Lymph Node protocol)...")
+        sc.pp.filter_genes(adata_rna, min_cells=10)
+        sc.pp.highly_variable_genes(adata_rna, flavor="seurat_v3", n_top_genes=3000)
+        sc.pp.normalize_total(adata_rna, target_sum=1e4)
+        sc.pp.log1p(adata_rna)
+        sc.pp.scale(adata_rna)
+        adata_rna_high = adata_rna[:, adata_rna.var['highly_variable']]
+        n_comps_rna = min(adata_mod2.n_vars - 1, adata_rna_high.n_obs - 1, adata_rna_high.n_vars - 1)
         print(f"Using {n_comps_rna} components for RNA PCA (based on ADT n_vars)")
         adata_rna.obsm['feat'] = pca(adata_rna_high, n_comps=n_comps_rna)
         
         print("Preprocessing Protein (ADT) data...")
         adata_mod2 = clr_normalize_each_cell(adata_mod2)
         sc.pp.scale(adata_mod2)
-        adata_mod2.obsm['feat'] = pca(adata_mod2, n_comps=adata_mod2.n_vars - 1)
+        n_comps_adt = min(adata_mod2.n_vars - 1, adata_mod2.n_obs - 1)
+        adata_mod2.obsm['feat'] = pca(adata_mod2, n_comps=n_comps_adt)
     else:
-        n_comps_rna = min(50, adata_rna_high.n_obs - 1, adata_rna_high.n_vars - 1)
+        # Mouse Brain / Epigenome-transcriptome protocol (MISAR-seq standard)
+        print("Preprocessing RNA data (Mouse Brain protocol, n_comps=200)...")
+        sc.pp.filter_genes(adata_rna, min_cells=10)
+        sc.pp.highly_variable_genes(adata_rna, flavor="seurat_v3", n_top_genes=3000)
+        sc.pp.normalize_total(adata_rna, target_sum=1e4)
+        sc.pp.log1p(adata_rna)
+        sc.pp.scale(adata_rna)
+        adata_rna_high = adata_rna[:, adata_rna.var['highly_variable']]
+        n_comps_rna = min(200, adata_rna_high.n_obs - 1, adata_rna_high.n_vars - 1)
         print(f"Using {n_comps_rna} components for RNA PCA")
         adata_rna.obsm['feat'] = pca(adata_rna_high, n_comps=n_comps_rna)
         
-        print("Preprocessing Epigenome (ATAC) data...")
-        sc.pp.normalize_total(adata_mod2, target_sum=1e4)
-        sc.pp.log1p(adata_mod2)
-        sc.pp.scale(adata_mod2)
-        n_comps_mod2 = min(50, adata_mod2.n_obs - 1, adata_mod2.n_vars - 1)
-        print(f"Using {n_comps_mod2} components for ATAC PCA")
-        adata_mod2.obsm['feat'] = pca(adata_mod2, n_comps=n_comps_mod2)
+        print("Preprocessing Epigenome (ATAC) data using LSI (TF-IDF + SVD, n_components=201)...")
+        adata_mod2 = preprocess_atac(adata_mod2, adata_rna, n_components=201)
         
     # 4. Training GNN
-    print("Constructing neighbor graphs...")
-    data = construct_neighbor_graph(adata_rna, adata_mod2, datatype='10x')
+    print(f"Constructing neighbor graphs with datatype='{target_datatype}'...")
+    data = construct_neighbor_graph(adata_rna, adata_mod2, datatype=target_datatype)
     data['adj_emb'] = kneighbors_graph(embedding, 20, mode="connectivity", metric="correlation", include_self=False)
     
-    print("Training spaLLM...")
-    model = Train_spaLLM(data, datatype='10x', device=device, embedding=embedding)
+    print(f"Training spaLLM with datatype='{target_datatype}'...")
+    model = Train_spaLLM(data, datatype=target_datatype, device=device, embedding=embedding)
     output = model.train(epochs=800)
     
     adata = adata_rna.copy()
@@ -1808,6 +1872,7 @@ def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_
         "weight_decay": 0.0,
         "dim_output": 64,
         "clustering_tool": primary_alg,
+        "datatype": target_datatype,
         "all_algorithms": {
             "KMeans": metrics_kmeans,
             "Leiden": metrics_leiden,
