@@ -575,25 +575,45 @@ class SpaGCNModel:
 # ==============================================================================
 # CLUSTERING & EVALUATION ENGINE
 # ==============================================================================
-def run_mclust(data: np.ndarray, n_clusters: int, modelNames: str = "EEE", seed: int = 42) -> np.ndarray:
-    """Clustering using R's mclust package, with a fallback to Gaussian Mixture Model."""
+def run_mclust(data: np.ndarray, n_clusters: int, modelNames: str = "EEE", seed: int = 42, max_dims: int = 30) -> np.ndarray:
+    """Clustering using R's mclust package with PCA dimension reduction and fallback."""
+    data_mat = np.array(data, dtype=np.float64)
+    if data_mat.shape[1] > max_dims:
+        n_comps = min(max_dims, data_mat.shape[0] - 1, data_mat.shape[1])
+        pca_model = PCA(n_components=n_comps, random_state=seed)
+        data_mat = pca_model.fit_transform(data_mat)
+
     try:
         import rpy2.robjects as robjects
         from rpy2.robjects import numpy2ri
-        from rpy2.robjects.packages import importr
-
         numpy2ri.activate()
-        mclust = importr('mclust')
-        robjects.r['set.seed'](seed)
-        res = mclust.Mclust(numpy2ri.numpy2rpy(data), G=n_clusters, modelNames=modelNames)
-        labels = np.array(res.rx2('classification')) - 1
-        numpy2ri.deactivate()
-        return labels.astype(int)
+
+        r_code = '''
+        if (!requireNamespace("mclust", quietly = TRUE)) {
+            install.packages("mclust", repos="https://cloud.r-project.org", quiet=TRUE)
+        }
+        suppressPackageStartupMessages(library(mclust))
+        run_mclust_native <- function(mat, n_clusters, seed) {
+            set.seed(seed)
+            mat <- as.matrix(mat)
+            dimnames(mat) <- NULL
+            res <- Mclust(mat, G=n_clusters, modelNames="EEE")
+            if (is.null(res)) {
+                res <- Mclust(mat, G=n_clusters)
+            }
+            return(as.integer(res$classification))
+        }
+        '''
+        robjects.r(r_code)
+        robjects.globalenv['tmp_spagcn_mat'] = numpy2ri.numpy2rpy(data_mat)
+        res = robjects.r(f'run_mclust_native(tmp_spagcn_mat, {n_clusters}, {seed})')
+        labels = np.array(res).astype(int) - 1
+        return labels
     except Exception as e:
         print(f"Warning: R mclust failed ({e}). Falling back to GaussianMixture...")
         from sklearn.mixture import GaussianMixture
         gm = GaussianMixture(n_components=n_clusters, random_state=seed)
-        return gm.fit_predict(data)
+        return gm.fit_predict(data_mat)
 
 
 def run_kmeans(data: np.ndarray, n_clusters: int, seed: int = 42) -> np.ndarray:
@@ -688,6 +708,17 @@ def plot_clustering_and_spatial(
     show_plots: bool = True
 ):
     """Plot UMAP and Spatial visualizations for Ground Truth, KMeans, Leiden, and mclust."""
+    if 'X_umap' not in adata.obsm:
+        rep = 'X_spagcn' if 'X_spagcn' in adata.obsm else ('feat' if 'feat' in adata.obsm else None)
+        try:
+            if rep is not None:
+                sc.pp.neighbors(adata, use_rep=rep, n_neighbors=15)
+            else:
+                sc.pp.neighbors(adata, n_neighbors=15)
+            sc.tl.umap(adata)
+        except Exception as e:
+            print(f"Warning: Failed to compute UMAP in plot_clustering_and_spatial: {e}")
+
     fig, axes = plt.subplots(4, 2, figsize=(14, 24))
 
     # Row 0: Ground Truth
@@ -1127,6 +1158,16 @@ def run_spagcn_workflow(
     adata.obsm['feat'] = latent_emb
     adata.obs['spagcn_pred'] = y_spagcn_pred
     adata.obs['spagcn_refined'] = y_spagcn_refined
+
+    # Compute UMAP projection for visualizations and exports
+    print("Computing UMAP embeddings on SpaGCN latent representations...")
+    try:
+        sc.pp.neighbors(adata, use_rep='X_spagcn', n_neighbors=15, random_state=seed)
+        sc.tl.umap(adata, random_state=seed)
+    except Exception as e:
+        print(f"Warning: Standard UMAP on X_spagcn failed ({e}). Retrying with default rep...")
+        sc.pp.neighbors(adata, n_neighbors=15)
+        sc.tl.umap(adata)
 
     # Compute modality attention proxy from the 64 latent dimensions (first 32 RNA, last 32 Mod2)
     try:
