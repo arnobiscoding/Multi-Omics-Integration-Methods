@@ -95,6 +95,40 @@ except ImportError:
     pass
 
 # ==============================================================================
+# PyTorch Lightning Custom Progress Callback
+# ==============================================================================
+try:
+    from lightning.pytorch.callbacks import Callback as PLCallback
+except ImportError:
+    try:
+        from pytorch_lightning.callbacks import Callback as PLCallback
+    except ImportError:
+        PLCallback = object
+
+class TotalVIProgressCallback(PLCallback):
+    """Clean live progress callback for totalVI execution in non-interactive Kaggle environments."""
+    def __init__(self, print_every=25):
+        if PLCallback is not object:
+            super().__init__()
+        self.print_every = print_every
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        try:
+            epoch = trainer.current_epoch + 1
+            max_epochs = trainer.max_epochs
+            if epoch == 1 or epoch % self.print_every == 0 or epoch == max_epochs:
+                loss_str = ""
+                metrics = getattr(trainer, "callback_metrics", {})
+                for k in ["train_loss_epoch", "train_loss", "loss", "elbo_train"]:
+                    if k in metrics:
+                        val = metrics[k]
+                        loss_str = f" | Loss: {float(val):.3f}"
+                        break
+                print(f"  [totalVI Training] Epoch {epoch:3d}/{max_epochs:3d}{loss_str}", flush=True)
+        except Exception:
+            pass
+
+# ==============================================================================
 # RUN CONFIGURATION & DATASETS
 # ==============================================================================
 ENV_MODE = "auto"
@@ -1016,6 +1050,26 @@ def run_totalvi_workflow(
     adata_rna.obs['batch'] = 'batch_0'
     adata_rna.layers['counts'] = adata_rna.X.copy()
 
+    # Subsetting Modality 2 (ATAC) to top 4,000 most informative features for efficiency & convergence
+    if adata_mod2.n_vars > 4000:
+        print(f"Subsetting Modality 2 (ATAC) from {adata_mod2.n_vars} to top 4,000 most informative features...")
+        try:
+            adata_mod2.layers['counts'] = adata_mod2.X.copy()
+            sc.pp.highly_variable_genes(
+                adata_mod2,
+                n_top_genes=4000,
+                flavor="seurat_v3",
+                layer="counts"
+            )
+            adata_mod2_subset = adata_mod2[:, adata_mod2.var["highly_variable"]].copy()
+        except Exception:
+            variances = np.var(adata_mod2.X, axis=0)
+            top_4000_idx = np.argsort(variances)[::-1][:4000]
+            adata_mod2_subset = adata_mod2[:, top_4000_idx].copy()
+        print(f"Modality 2 subsetted shape: {adata_mod2_subset.shape}")
+    else:
+        adata_mod2_subset = adata_mod2.copy()
+
     # Execute totalVI Model Training
     loss_history = []
     latent_emb = None
@@ -1025,7 +1079,7 @@ def run_totalvi_workflow(
         try:
             if HAVE_MUDATA:
                 print("Setting up MuData object for totalVI...")
-                mdata = md.MuData({"rna": adata_rna, "protein": adata_mod2})
+                mdata = md.MuData({"rna": adata_rna, "protein": adata_mod2_subset})
                 sc.pp.highly_variable_genes(
                     mdata.mod["rna"],
                     n_top_genes=min(4000, adata_rna.n_vars),
@@ -1053,7 +1107,7 @@ def run_totalvi_workflow(
             else:
                 print("MuData not detected, using AnnData direct setup for totalVI...")
                 adata_combined = adata_rna.copy()
-                adata_combined.obsm["protein_expression"] = adata_mod2.X
+                adata_combined.obsm["protein_expression"] = adata_mod2_subset.X
                 sc.pp.highly_variable_genes(
                     adata_combined,
                     n_top_genes=min(4000, adata_combined.n_vars),
@@ -1073,16 +1127,24 @@ def run_totalvi_workflow(
             use_gpu = torch.cuda.is_available() and device.type == 'cuda'
             accelerator = "gpu" if use_gpu else "cpu"
             print(f"Training totalVI model for {epochs} epochs (accelerator='{accelerator}')...")
+
+            progress_cb = TotalVIProgressCallback(print_every=25)
             try:
-                # Modern scvi-tools (>=0.20+) uses PyTorch Lightning with accelerator
-                vae.train(max_epochs=epochs, accelerator=accelerator)
+                # Modern scvi-tools with accelerator and live progress logging
+                vae.train(
+                    max_epochs=epochs,
+                    accelerator=accelerator,
+                    callbacks=[progress_cb],
+                    enable_progress_bar=False
+                )
             except TypeError:
                 try:
-                    # Legacy scvi-tools (<0.20) used use_gpu
-                    vae.train(max_epochs=epochs, use_gpu=use_gpu)
+                    vae.train(max_epochs=epochs, accelerator=accelerator)
                 except TypeError:
-                    # Auto fallback
-                    vae.train(max_epochs=epochs)
+                    try:
+                        vae.train(max_epochs=epochs, use_gpu=use_gpu)
+                    except TypeError:
+                        vae.train(max_epochs=epochs)
 
             latent_emb = vae.get_latent_representation()
             if hasattr(vae, "history") and "elbo_train" in vae.history:
