@@ -1071,8 +1071,18 @@ def run_totalvi_workflow(
                 vae = scvi.model.TOTALVI(adata_subset, n_latent=64)
 
             use_gpu = torch.cuda.is_available() and device.type == 'cuda'
-            print(f"Training totalVI model for {epochs} epochs (use_gpu={use_gpu})...")
-            vae.train(max_epochs=epochs, use_gpu=use_gpu)
+            accelerator = "gpu" if use_gpu else "cpu"
+            print(f"Training totalVI model for {epochs} epochs (accelerator='{accelerator}')...")
+            try:
+                # Modern scvi-tools (>=0.20+) uses PyTorch Lightning with accelerator
+                vae.train(max_epochs=epochs, accelerator=accelerator)
+            except TypeError:
+                try:
+                    # Legacy scvi-tools (<0.20) used use_gpu
+                    vae.train(max_epochs=epochs, use_gpu=use_gpu)
+                except TypeError:
+                    # Auto fallback
+                    vae.train(max_epochs=epochs)
 
             latent_emb = vae.get_latent_representation()
             if hasattr(vae, "history") and "elbo_train" in vae.history:
