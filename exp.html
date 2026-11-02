@@ -1,0 +1,2806 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASTRA-Redo: Deep Architecture & Mathematical Reference</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+
+    <!-- KaTeX for LaTeX Math Rendering -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"></script>
+
+    <!-- Mermaid.js for Architecture & Flow Diagrams -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.4.0/dist/mermaid.min.js"></script>
+
+    <!-- SVG Pan & Zoom Library -->
+    <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        :root {
+            --bg-primary: #0a0e17;
+            --bg-secondary: #111827;
+            --bg-card: rgba(17, 24, 39, 0.85);
+            --bg-card-hover: rgba(31, 41, 55, 0.95);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --border-accent: rgba(56, 189, 248, 0.4);
+            --text-primary: #f3f4f6;
+            --text-secondary: #9ca3af;
+            --text-muted: #6b7280;
+
+            --accent-cyan: #38bdf8;
+            --accent-blue: #3b82f6;
+            --accent-purple: #a855f7;
+            --accent-emerald: #10b981;
+            --accent-amber: #f59e0b;
+            --accent-rose: #f43f5e;
+
+            --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            --font-mono: 'Fira Code', monospace;
+            --sidebar-width: 275px;
+        }
+
+        [data-theme="light"] {
+            --bg-primary: #f8fafc;
+            --bg-secondary: #ffffff;
+            --bg-card: rgba(255, 255, 255, 0.95);
+            --bg-card-hover: #f1f5f9;
+            --border-color: rgba(0, 0, 0, 0.1);
+            --border-accent: rgba(14, 165, 233, 0.5);
+            --text-primary: #0f172a;
+            --text-secondary: #475569;
+            --text-muted: #94a3b8;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            scroll-behavior: smooth;
+        }
+
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: var(--font-sans);
+            line-height: 1.65;
+            overflow-x: hidden;
+            min-height: 100vh;
+            display: flex;
+            transition: background-color 0.25s ease, color 0.25s ease;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-primary);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 3px;
+        }
+
+        /* Mobile Header */
+        .mobile-header {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 56px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 0 1rem;
+            align-items: center;
+            justify-content: space-between;
+            z-index: 200;
+            backdrop-filter: blur(12px);
+        }
+
+        .hamburger-btn {
+            background: none;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 0.35rem 0.5rem;
+            color: var(--text-primary);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Sidebar Overlay Backdrop for Mobile */
+        .sidebar-backdrop {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.65);
+            backdrop-filter: blur(4px);
+            z-index: 140;
+        }
+
+        body.mobile-nav-open .sidebar-backdrop {
+            display: block;
+        }
+
+        /* Sidebar */
+        #sidebar {
+            width: var(--sidebar-width);
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border-color);
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            padding: 1.25rem 0.85rem;
+            display: flex;
+            flex-direction: column;
+            z-index: 150;
+            backdrop-filter: blur(14px);
+            overflow-y: auto;
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        /* Collapsed Sidebar on Desktop */
+        body.sidebar-collapsed #sidebar {
+            transform: translateX(-100%);
+        }
+
+        /* Floating Toggle Button when Sidebar is Collapsed */
+        .sidebar-floating-toggle {
+            position: fixed;
+            top: 1rem;
+            left: 1rem;
+            z-index: 130;
+            display: none;
+            align-items: center;
+            gap: 0.45rem;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-accent);
+            padding: 0.45rem 0.85rem;
+            border-radius: 8px;
+            cursor: pointer;
+            box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(12px);
+            font-size: 0.82rem;
+            font-weight: 600;
+            transition: all 0.2s ease;
+        }
+
+        .sidebar-floating-toggle:hover {
+            background: var(--bg-card-hover);
+            border-color: var(--accent-cyan);
+            color: var(--accent-cyan);
+            transform: translateY(-1px);
+        }
+
+        body.sidebar-collapsed .sidebar-floating-toggle {
+            display: flex;
+        }
+
+        /* Main Content Area */
+        #main-content {
+            margin-left: var(--sidebar-width);
+            flex: 1;
+            padding: 2.25rem 2.75rem;
+            width: calc(100% - var(--sidebar-width));
+            min-height: 100vh;
+            transition: margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1), width 0.3s cubic-bezier(0.4, 0, 0.2, 1), padding 0.3s ease;
+        }
+
+        /* Expanded Content Area when Sidebar is Collapsed */
+        body.sidebar-collapsed #main-content {
+            margin-left: 0;
+            width: 100%;
+            padding: 2.5rem 3.5rem;
+        }
+
+        .content-wrapper {
+            max-width: 1200px;
+            margin: 0 auto;
+            width: 100%;
+        }
+
+        @media (max-width: 1024px) {
+            .mobile-header {
+                display: flex;
+            }
+
+            .sidebar-floating-toggle {
+                display: none !important;
+            }
+
+            #sidebar {
+                transform: translateX(-100%);
+                top: 56px;
+            }
+
+            #sidebar.open {
+                transform: translateX(0);
+            }
+
+            #main-content {
+                margin-left: 0 !important;
+                width: 100% !important;
+                padding: 4.75rem 1.25rem 2.5rem !important;
+            }
+        }
+
+        /* Sidebar Brand & Collapse Action */
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+            margin-bottom: 1.25rem;
+            padding: 0.25rem 0.25rem;
+        }
+
+        .brand-icon {
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+            color: white;
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 0 14px rgba(56, 189, 248, 0.35);
+            flex-shrink: 0;
+        }
+
+        .brand-title {
+            font-size: 1.1rem;
+            font-weight: 800;
+            letter-spacing: -0.025em;
+            background: linear-gradient(135deg, #fff 30%, var(--accent-cyan));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        [data-theme="light"] .brand-title {
+            background: linear-gradient(135deg, #0f172a 30%, var(--accent-blue));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .brand-subtitle {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            font-weight: 600;
+        }
+
+        .sidebar-collapse-btn {
+            background: transparent;
+            border: 1px solid transparent;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 0.35rem;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-left: auto;
+            transition: all 0.2s;
+        }
+
+        .sidebar-collapse-btn:hover {
+            background: var(--bg-card-hover);
+            color: var(--accent-cyan);
+            border-color: var(--border-color);
+        }
+
+        /* Sidebar Controls Bar */
+        .theme-toggle-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.45rem 0.65rem;
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 7px;
+            border: 1px solid var(--border-color);
+            margin-bottom: 1rem;
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+        }
+
+        .toggle-btn {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 0.25rem 0.55rem;
+            border-radius: 5px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+            font-size: 0.72rem;
+            transition: all 0.2s;
+        }
+
+        .toggle-btn:hover {
+            background: var(--accent-cyan);
+            color: #000;
+            border-color: var(--accent-cyan);
+        }
+
+        .nav-group-title {
+            font-size: 0.68rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.09em;
+            color: var(--text-muted);
+            margin: 1rem 0.4rem 0.35rem;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            padding: 0.5rem 0.65rem;
+            color: var(--text-secondary);
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 0.84rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            margin-bottom: 2px;
+        }
+
+        .nav-item:hover,
+        .nav-item.active {
+            background: var(--bg-card-hover);
+            color: var(--accent-cyan);
+            border-left: 2px solid var(--accent-cyan);
+        }
+
+        /* Hero Header */
+        .hero-header {
+            margin-bottom: 2.75rem;
+            padding-bottom: 1.75rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            padding: 0.3rem 0.8rem;
+            border-radius: 9999px;
+            background: rgba(56, 189, 248, 0.12);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            color: var(--accent-cyan);
+            font-size: 0.78rem;
+            font-weight: 600;
+            margin-bottom: 0.85rem;
+        }
+
+        .hero-title {
+            font-size: 2.6rem;
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            line-height: 1.15;
+            margin-bottom: 0.85rem;
+            background: linear-gradient(135deg, #ffffff 40%, #94a3b8 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        [data-theme="light"] .hero-title {
+            background: linear-gradient(135deg, #0f172a 40%, #334155 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .hero-subtitle {
+            font-size: 1.1rem;
+            color: var(--text-secondary);
+            max-width: 950px;
+        }
+
+        /* Meta Badges */
+        .meta-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.65rem;
+            margin-top: 1.25rem;
+        }
+
+        .meta-pill {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            background: var(--bg-secondary);
+            padding: 0.35rem 0.75rem;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+        }
+
+        .meta-pill strong {
+            color: var(--text-primary);
+        }
+
+        /* Section Spacing */
+        section {
+            margin-bottom: 3.25rem;
+        }
+
+        .section-title {
+            font-size: 1.75rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            margin-bottom: 0.65rem;
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+        }
+
+        .section-desc {
+            color: var(--text-secondary);
+            font-size: 1rem;
+            margin-bottom: 1.5rem;
+            max-width: 950px;
+        }
+
+        /* Cards */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 11px;
+            padding: 1.5rem;
+            margin-bottom: 1.25rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.22);
+            backdrop-filter: blur(10px);
+            transition: transform 0.2s ease, border-color 0.2s ease;
+            position: relative;
+        }
+
+        .card:hover {
+            border-color: var(--border-accent);
+        }
+
+        .card-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 0.45rem;
+        }
+
+        /* Grids */
+        .grid-2 {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1.25rem;
+        }
+
+        .grid-3 {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1.15rem;
+        }
+
+        @media (max-width: 900px) {
+
+            .grid-2,
+            .grid-3 {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Formula Cards with Margin/Padding Fixes */
+        .math-card {
+            background: rgba(15, 23, 42, 0.75);
+            border-left: 3px solid var(--accent-cyan);
+            border-radius: 0 8px 8px 0;
+            padding: 1.1rem 4.5rem 1.1rem 1.25rem;
+            /* 4.5rem right padding prevents copy button collision */
+            margin: 0.85rem 0;
+            font-size: 1rem;
+            overflow-x: auto;
+            position: relative;
+        }
+
+        [data-theme="light"] .math-card {
+            background: #f1f5f9;
+        }
+
+        /* Code Blocks with Margin/Padding Fixes */
+        pre,
+        code {
+            font-family: var(--font-mono);
+        }
+
+        pre {
+            background: #0d1117;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 2.25rem 1.25rem 1.15rem;
+            /* 2.25rem top padding prevents copy button collision */
+            overflow-x: auto;
+            font-size: 0.85rem;
+            color: #c9d1d9;
+            margin: 0.85rem 0;
+            line-height: 1.55;
+            position: relative;
+        }
+
+        p code,
+        li code,
+        td code {
+            background: rgba(255, 255, 255, 0.08);
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.88em;
+            color: var(--accent-cyan);
+        }
+
+        [data-theme="light"] p code,
+        [data-theme="light"] li code,
+        [data-theme="light"] td code {
+            background: rgba(0, 0, 0, 0.06);
+            color: var(--accent-blue);
+        }
+
+        /* Copy Button */
+        .copy-btn {
+            position: absolute;
+            top: 0.6rem;
+            right: 0.6rem;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid var(--border-color);
+            border-radius: 5px;
+            padding: 0.25rem 0.5rem;
+            font-size: 0.72rem;
+            color: var(--text-secondary);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+            transition: all 0.2s;
+        }
+
+        .copy-btn:hover {
+            background: var(--accent-cyan);
+            color: #000;
+            border-color: var(--accent-cyan);
+        }
+
+        /* Diagram Containers */
+        .diagram-container {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 11px;
+            padding: 1.5rem 1rem;
+            margin: 1.25rem 0;
+            overflow-x: auto;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .diagram-title {
+            font-size: 0.84rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-muted);
+            margin-bottom: 1.15rem;
+            align-self: flex-start;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .mermaid {
+            width: 100%;
+            display: flex;
+            justify-content: center;
+        }
+
+        /* Tabs */
+        .tab-header {
+            display: flex;
+            flex-wrap: wrap;
+            border-bottom: 1px solid var(--border-color);
+            gap: 0.45rem;
+            margin-bottom: 1.15rem;
+        }
+
+        .tab-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            padding: 0.55rem 1rem;
+            font-family: var(--font-sans);
+            font-size: 0.86rem;
+            font-weight: 600;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .tab-btn:hover {
+            color: var(--text-primary);
+        }
+
+        .tab-btn.active {
+            color: var(--accent-cyan);
+            border-bottom-color: var(--accent-cyan);
+        }
+
+        .tab-pane {
+            display: none;
+        }
+
+        .tab-pane.active {
+            display: block;
+            animation: fadeIn 0.25s ease;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(4px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Badges */
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            font-size: 0.72rem;
+            font-weight: 700;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .badge-cyan {
+            background: rgba(56, 189, 248, 0.15);
+            color: var(--accent-cyan);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+        }
+
+        .badge-purple {
+            background: rgba(168, 85, 247, 0.15);
+            color: var(--accent-purple);
+            border: 1px solid rgba(168, 85, 247, 0.3);
+        }
+
+        .badge-emerald {
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--accent-emerald);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .badge-amber {
+            background: rgba(245, 158, 11, 0.15);
+            color: var(--accent-amber);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+
+        .badge-rose {
+            background: rgba(244, 63, 94, 0.15);
+            color: var(--accent-rose);
+            border: 1px solid rgba(244, 63, 94, 0.3);
+        }
+
+        /* Tables & Responsive Wrapper */
+        .table-wrapper {
+            width: 100%;
+            overflow-x: auto;
+            margin: 1rem 0;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            -webkit-overflow-scrolling: touch;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.88rem;
+        }
+
+        th,
+        td {
+            padding: 0.7rem 0.95rem;
+            border-bottom: 1px solid var(--border-color);
+            text-align: left;
+        }
+
+        th {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        tr:nth-child(even) {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        tr:hover {
+            background: var(--bg-card-hover);
+        }
+
+        /* Search & Inputs */
+        .search-box {
+            width: 100%;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            padding: 0.65rem 0.95rem;
+            border-radius: 7px;
+            color: var(--text-primary);
+            font-family: var(--font-sans);
+            font-size: 0.88rem;
+            margin-bottom: 1.25rem;
+            outline: none;
+            transition: border-color 0.2s ease;
+        }
+
+        .search-box:focus {
+            border-color: var(--accent-cyan);
+        }
+
+        /* Interactive Panels */
+        .interactive-panel {
+            background: linear-gradient(145deg, rgba(15, 23, 42, 0.85), rgba(30, 41, 59, 0.55));
+            border: 1px solid var(--border-accent);
+            border-radius: 11px;
+            padding: 1.35rem;
+            margin: 1.25rem 0;
+        }
+
+        .control-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1.25rem;
+            margin-bottom: 1rem;
+        }
+
+        .control-group {
+            flex: 1 1 220px;
+        }
+
+        .control-label {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 0.35rem;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .slider {
+            width: 100%;
+            accent-color: var(--accent-cyan);
+            cursor: pointer;
+        }
+
+        /* Live Gauge Bar */
+        .gauge-wrapper {
+            margin: 1.15rem 0;
+        }
+
+        .gauge-bar {
+            height: 22px;
+            border-radius: 11px;
+            background: #1e293b;
+            overflow: hidden;
+            display: flex;
+            border: 1px solid var(--border-color);
+        }
+
+        .gauge-segment-left {
+            background: linear-gradient(90deg, #38bdf8, #3b82f6);
+            transition: width 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.72rem;
+            font-weight: 700;
+            color: #000;
+        }
+
+        .gauge-segment-right {
+            background: linear-gradient(90deg, #a855f7, #ec4899);
+            transition: width 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.72rem;
+            font-weight: 700;
+            color: #fff;
+        }
+
+        /* 5x5 Spot Grid */
+        .spot-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 42px);
+            grid-template-rows: repeat(5, 42px);
+            gap: 6px;
+            justify-content: center;
+            margin: 1rem auto;
+        }
+
+        .spot-cell {
+            border-radius: 7px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            font-weight: 700;
+            color: #000;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            border: 2px solid transparent;
+        }
+
+        .spot-cell:hover {
+            transform: scale(1.1);
+            z-index: 10;
+        }
+
+        .spot-cell.selected {
+            border-color: #fff;
+            box-shadow: 0 0 10px #fff;
+        }
+
+        .cluster-1 {
+            background-color: #38bdf8;
+            color: #042f2e;
+        }
+
+        .cluster-2 {
+            background-color: #a855f7;
+            color: #3b0764;
+        }
+
+        .cluster-3 {
+            background-color: #10b981;
+            color: #022c22;
+        }
+
+        /* Interactive Dataset Switcher Pills */
+        .dataset-pills {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-bottom: 1.15rem;
+        }
+
+        .ds-pill {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            padding: 0.4rem 0.8rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .ds-pill:hover,
+        .ds-pill.active {
+            background: var(--bg-card-hover);
+            color: var(--accent-cyan);
+            border-color: var(--accent-cyan);
+        }
+
+        /* =========================================
+       VISUAL ENHANCEMENTS & ZOOMABLE DIAGRAMS
+       ========================================= */
+
+        /* 1. Subtle Animated Gradient Background */
+        body {
+            background: linear-gradient(-45deg, #0a0e17, #111827, #0d1b2a, #1b263b);
+            background-size: 400% 400%;
+            animation: gradientBG 15s ease infinite;
+        }
+
+        @keyframes gradientBG {
+            0% {
+                background-position: 0% 50%;
+            }
+
+            50% {
+                background-position: 100% 50%;
+            }
+
+            100% {
+                background-position: 0% 50%;
+            }
+        }
+
+        [data-theme="light"] body {
+            background: linear-gradient(-45deg, #f8fafc, #e2e8f0, #f1f5f9, #cbd5e1);
+            background-size: 400% 400%;
+            animation: gradientBG 15s ease infinite;
+        }
+
+        /* 2. Glassmorphism Cards with Glowing Hover */
+        .card {
+            background: rgba(17, 24, 39, 0.65);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+            transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        [data-theme="light"] .card {
+            background: rgba(255, 255, 255, 0.7);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.1);
+        }
+
+        .card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 12px 40px 0 rgba(56, 189, 248, 0.15);
+            border-color: rgba(56, 189, 248, 0.6);
+        }
+
+        /* 3. Floating Hero Badge */
+        .hero-badge {
+            animation: floatBadge 3s ease-in-out infinite;
+        }
+
+        @keyframes floatBadge {
+
+            0%,
+            100% {
+                transform: translateY(0);
+            }
+
+            50% {
+                transform: translateY(-5px);
+            }
+        }
+
+        /* 4. Zoomable Diagram Container Fixes */
+        .diagram-container {
+            background: rgba(15, 23, 42, 0.75);
+            box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.3);
+            height: 550px;
+            /* Fixed height ensures a consistent window for panning */
+            overflow: hidden;
+            position: relative;
+        }
+
+        .mermaid {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: grab;
+        }
+
+        .mermaid:active {
+            cursor: grabbing;
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- Floating Toggle Button when Sidebar is Collapsed on Desktop -->
+    <button id="sidebar-floating-toggle" class="sidebar-floating-toggle" onclick="toggleDesktopSidebar()">
+        <i data-lucide="panel-left-open" style="width:16px; height:16px;"></i>
+        <span>Show Sidebar</span>
+    </button>
+
+    <!-- Mobile Header -->
+    <header class="mobile-header">
+        <div style="display:flex; align-items:center; gap:0.5rem;">
+            <div class="brand-icon" style="width:28px; height:28px;"><i data-lucide="layers" style="width:16px;"></i>
+            </div>
+            <span style="font-weight:800; font-size:0.95rem;">ASTRA-Redo</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:0.4rem;">
+            <button class="toggle-btn" onclick="toggleTheme()"><i data-lucide="sun" id="mobile-theme-icon"
+                    style="width:14px; height:14px;"></i></button>
+            <button class="hamburger-btn" onclick="toggleSidebar()"><i data-lucide="menu"
+                    style="width:18px; height:18px;"></i></button>
+        </div>
+    </header>
+
+    <!-- Mobile Overlay Backdrop -->
+    <div id="sidebar-backdrop" class="sidebar-backdrop" onclick="closeMobileSidebar()"></div>
+
+    <!-- Sidebar Navigation -->
+    <aside id="sidebar">
+        <div class="brand">
+            <div class="brand-icon"><i data-lucide="layers"></i></div>
+            <div>
+                <div class="brand-title">ASTRA-Redo</div>
+                <div class="brand-subtitle">Spatial Multi-Omics</div>
+            </div>
+            <!-- Desktop Collapse Button -->
+            <button id="sidebar-collapse-btn" class="sidebar-collapse-btn" title="Collapse Sidebar"
+                onclick="toggleDesktopSidebar()">
+                <i data-lucide="panel-left-close" style="width:16px; height:16px;"></i>
+            </button>
+        </div>
+
+        <div class="theme-toggle-bar">
+            <span>Color Theme</span>
+            <button class="toggle-btn" onclick="toggleTheme()">
+                <i data-lucide="sun" id="theme-icon" style="width:13px; height:13px;"></i>
+                <span id="theme-text">Light Mode</span>
+            </button>
+        </div>
+
+        <div class="nav-group-title">Overview</div>
+        <a href="#overview" class="nav-item active"><i data-lucide="compass"></i> Executive Summary</a>
+        <a href="#architecture-high-level" class="nav-item"><i data-lucide="network"></i> Macro Pipeline</a>
+
+        <div class="nav-group-title">Interactive Simulators</div>
+        <a href="#sim-gated-attention" class="nav-item"><i data-lucide="sliders"></i> Gated Attention Lab</a>
+        <a href="#sim-potts-mrf" class="nav-item"><i data-lucide="grid"></i> Potts MRF Visualizer</a>
+        <a href="#sim-two-stage" class="nav-item"><i data-lucide="zap"></i> Loss & Stage Stepper</a>
+        <a href="#sim-dataset-explorer" class="nav-item"><i data-lucide="database"></i> Dataset Explorer</a>
+
+        <div class="nav-group-title">Core Systems</div>
+        <a href="#preprocessing" class="nav-item"><i data-lucide="filter"></i> Preprocessing Engine</a>
+        <a href="#dual-graph" class="nav-item"><i data-lucide="share-2"></i> Dual-Graph Topology</a>
+        <a href="#gated-fusion" class="nav-item"><i data-lucide="cpu"></i> Gated Attention GCN</a>
+        <a href="#potts-dec" class="nav-item"><i data-lucide="target"></i> Spatial Potts DEC</a>
+        <a href="#training-engine" class="nav-item"><i data-lucide="play-circle"></i> Two-Stage Training</a>
+        <a href="#loss-formulation" class="nav-item"><i data-lucide="sigma"></i> Loss Formulations</a>
+        <a href="#visualizations" class="nav-item"><i data-lucide="pie-chart"></i> Visual Diagnostics</a>
+        <a href="#code-map" class="nav-item"><i data-lucide="file-code-2"></i> File API Reference</a>
+
+        <div
+            style="margin-top: auto; padding-top: 1rem; border-top: 1px solid var(--border-color); font-size: 0.72rem; color: var(--text-muted);">
+            Source: <code>astra-redo.py</code><br>
+            Total Lines: 930
+        </div>
+    </aside>
+
+    <!-- Main Content Body -->
+    <main id="main-content">
+        <div class="content-wrapper">
+
+            <!-- Hero Header -->
+            <header class="hero-header">
+                <div class="hero-badge"><i data-lucide="sparkles"></i> Spatial Multi-Omics Graph Autoencoder</div>
+                <h1 class="hero-title">ASTRA-Redo Architecture & Technical Reference</h1>
+                <p class="hero-subtitle">
+                    An interactive, mathematical, and topological walkthrough of the <code>astra-redo.py</code> deep
+                    learning pipeline:
+                    integrating spatial transcriptomics with CITE-seq ADT proteins and spatial ATAC-seq chromatin peaks
+                    via Dual-GCNs,
+                    Spot-Adaptive Gated Attention Fusion, and Spatial Potts Markov Random Field Deep Embedding
+                    Clustering.
+                </p>
+
+                <div class="meta-bar">
+                    <div class="meta-pill"><i data-lucide="file-text"></i> Source: <strong>astra-redo.py</strong></div>
+                    <div class="meta-pill"><i data-lucide="box"></i> Modalities: <strong>Spatial RNA + ADT /
+                            ATAC</strong></div>
+                    <div class="meta-pill"><i data-lucide="activity"></i> Latent Space: <strong>64 dimensions</strong>
+                    </div>
+                    <div class="meta-pill"><i data-lucide="refresh-cw"></i> Training: <strong>250 Pretrain + 150 DEC
+                            (400 Ep)</strong></div>
+                    <div class="meta-pill"><i data-lucide="shield-check"></i> MRF Consensus: <strong>Potts Regularized
+                            DEC</strong></div>
+                </div>
+            </header>
+
+            <!-- SECTION 1: EXECUTIVE SUMMARY -->
+            <section id="overview">
+                <h2 class="section-title"><i data-lucide="compass" style="color:var(--accent-cyan)"></i> 1. Executive
+                    Summary & Problem Setting</h2>
+                <p class="section-desc">
+                    Spatial multi-omics co-assays profile transcriptomics alongside auxiliary proteomic or epigenomic
+                    markers across tissue microenvironments. Standard autoencoders struggle with modality discrepancy,
+                    boundary smearing, and decoupled cluster formation.
+                </p>
+
+                <div class="grid-3">
+                    <div class="card">
+                        <div class="card-title"><span class="badge badge-cyan">Challenge 1</span> Modality Discrepancy
+                        </div>
+                        <p style="font-size:0.88rem; color:var(--text-secondary)">
+                            Gene counts ($3000$ HVGs) and auxiliary modalities (proteins or ATAC peaks) have completely
+                            different dynamic ranges, sparsity patterns, and dimensions. Concatenating them raw induces
+                            modality dominance.
+                        </p>
+                    </div>
+                    <div class="card">
+                        <div class="card-title"><span class="badge badge-purple">Challenge 2</span> Spatial vs.
+                            Phenotypic Conflict</div>
+                        <p style="font-size:0.88rem; color:var(--text-secondary)">
+                            Physical proximity does not guarantee cellular identity (e.g. sharp tumor-stroma
+                            boundaries). Pure spatial smoothing smears boundaries, whereas pure feature clustering
+                            yields noisy "salt-and-pepper" spot artifacts.
+                        </p>
+                    </div>
+                    <div class="card">
+                        <div class="card-title"><span class="badge badge-emerald">Challenge 3</span> Decoupled
+                            Clustering Collapse</div>
+                        <p style="font-size:0.88rem; color:var(--text-secondary)">
+                            Autoencoder reconstruction gradients often drown out clustering objectives. ASTRA-Redo
+                            introduces an active two-stage training paradigm where DEC actively steers latent manifolds
+                            regularized by spatial Potts consensus.
+                        </p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- SECTION 2: MACRO ARCHITECTURE -->
+            <section id="architecture-high-level">
+                <h2 class="section-title"><i data-lucide="network" style="color:var(--accent-purple)"></i> 2. End-to-End
+                    System Pipeline</h2>
+                <p class="section-desc">
+                    The pipeline ingests spatial matrices and 2D coordinates, constructs three graph topologies,
+                    executes dual-level gated fusion, and refines boundaries with Spatial Potts DEC.
+                </p>
+
+                <div class="diagram-container">
+                    <div class="diagram-title"><i data-lucide="git-branch"></i> Data Flow & Neural Computation Graph
+                    </div>
+                    <div class="mermaid">
+                        flowchart TB
+                        subgraph S1 ["1. Multi-Omics Data Ingestion"]
+                        RNA["Spatial RNA Counts (N spots x G genes)"]
+                        AUX["Auxiliary Modality (CITE-seq ADT or Spatial ATAC)"]
+                        COORDS["Physical Coordinates (X, Y) in R2"]
+                        end
+
+                        subgraph S2 ["2. Preprocessing & Normalization"]
+                        PP_RNA["RNA: Filter min_cells=10 → Seurat v3 HVG (3000) → Total Norm (10k) → log1p → Scale"]
+                        PP_ADT["ADT: Spot Seurat CLR Normalization → Standard Scale"]
+                        PP_ATAC["ATAC: TF-IDF → Total Norm (10k) → log1p → PCA (50 comps)"]
+                        end
+
+                        subgraph S3 ["3. Topological Graphs Construction"]
+                        G_SIM["Cosine Feature Graph (k=15)"]
+                        G_DIST["Spatial Distance Graph (k=15)"]
+                        G_COMM["Intersection Consensus Graph<br />E_common = E_sim ∩ E_dist"]
+                        A_NORM["Potts Row-Normalized Adjacency<br />A_norm = D⁻¹ (A_dist + I)"]
+                        end
+
+                        subgraph S4 ["4. DualGCN_Gated Backbone (Latent Dim = 64)"]
+                        GCN_SIM["RNA Sim GCN Branch (3000 → 512 → 64)"]
+                        GCN_DIST["RNA Dist GCN Branch (3000 → 512 → 64)"]
+                        GCN_AUX["Auxiliary Consensus GCN (D_aux → 64)"]
+                        FUS1["GatedAttentionFusion 1 (Intra-RNA)<br />g_sp = σ(W_1 [z_sim ∥ z_dist] + b_1)"]
+                        FUS2["GatedAttentionFusion 2 (Cross-Omics)<br />g_mod = σ(W_2 [z_fused ∥ z_pro] + b_2)"]
+                        end
+
+                        subgraph S5 ["5. Multi-Task Decoders"]
+                        D_JOINT["reconstruct_joint(z_fused_pro) → RNA + AUX"]
+                        D_SIM["reconstruct_rna(z_sim) → RNA"]
+                        D_DIST["reconstruct_rna(z_dist) → RNA"]
+                        D_AUX["reconstruct_aux(z_pro) → AUX"]
+                        end
+
+                        subgraph S6 ["6. Spatial Potts Consensus DEC"]
+                        Q_STUDENT["Student's t Soft Assignments Q"]
+                        P_SHARP["DEC Probability Sharpening"]
+                        P_POTTS["Potts Consensus: P ∝ P_dec · exp(λ_spatial · A_norm Q)"]
+                        KL_LOSS["DEC Loss: KL(Q ∥ P_final)"]
+                        end
+
+                        RNA --> PP_RNA
+                        AUX --> PP_ADT
+                        AUX --> PP_ATAC
+                        COORDS --> G_DIST
+                        COORDS --> A_NORM
+
+                        PP_RNA --> G_SIM
+                        PP_RNA --> GCN_SIM
+                        PP_RNA --> GCN_DIST
+                        G_SIM --> GCN_SIM
+                        G_DIST --> GCN_DIST
+                        G_SIM --> G_COMM
+                        G_DIST --> G_COMM
+
+                        PP_ADT --> GCN_AUX
+                        PP_ATAC --> GCN_AUX
+                        G_COMM --> GCN_AUX
+
+                        GCN_SIM --> FUS1
+                        GCN_DIST --> FUS1
+                        FUS1 --> FUS2
+                        GCN_AUX --> FUS2
+
+                        FUS2 --> D_JOINT
+                        GCN_SIM --> D_SIM
+                        GCN_DIST --> D_DIST
+                        GCN_AUX --> D_AUX
+
+                        FUS2 --> Q_STUDENT
+                        Q_STUDENT --> P_SHARP
+                        P_SHARP --> P_POTTS
+                        A_NORM --> P_POTTS
+                        Q_STUDENT --> KL_LOSS
+                        P_POTTS --> KL_LOSS
+                    </div>
+                </div>
+            </section>
+
+            <!-- SECTION 3: INTERACTIVE GATED ATTENTION LAB -->
+            <section id="sim-gated-attention">
+                <h2 class="section-title"><i data-lucide="sliders" style="color:var(--accent-cyan)"></i> 3. Interactive
+                    Lab: Spot-Adaptive Gated Attention</h2>
+                <p class="section-desc">
+                    Explore how the <code>GatedAttentionFusion</code> module dynamically weights transcriptomic feature
+                    similarity vs. physical spatial proximity on a per-spot basis.
+                </p>
+
+                <div class="interactive-panel card">
+                    <div class="card-title"><i data-lucide="cpu"></i> Live Attention Gate Simulator: $g = \sigma(W_g
+                        [z_1 \parallel z_2] + b_g)$</div>
+
+                    <div class="control-row">
+                        <div class="control-group">
+                            <div class="control-label">
+                                <span>$z_1$ Signal Magnitude (Transcriptomic Similarity)</span>
+                                <strong id="val-z1">1.20</strong>
+                            </div>
+                            <input type="range" class="slider" id="slider-z1" min="0" max="3" step="0.1" value="1.2"
+                                oninput="updateGateSim()">
+                        </div>
+
+                        <div class="control-group">
+                            <div class="control-label">
+                                <span>$z_2$ Signal Magnitude (Physical Distance)</span>
+                                <strong id="val-z2">0.80</strong>
+                            </div>
+                            <input type="range" class="slider" id="slider-z2" min="0" max="3" step="0.1" value="0.8"
+                                oninput="updateGateSim()">
+                        </div>
+                    </div>
+
+                    <div class="control-row">
+                        <div class="control-group">
+                            <div class="control-label">
+                                <span>Gate Linear Weight ($W_g$)</span>
+                                <strong id="val-wg">1.50</strong>
+                            </div>
+                            <input type="range" class="slider" id="slider-wg" min="-3" max="3" step="0.1" value="1.5"
+                                oninput="updateGateSim()">
+                        </div>
+
+                        <div class="control-group">
+                            <div class="control-label">
+                                <span>Gate Bias ($b_g$)</span>
+                                <strong id="val-bg">0.00</strong>
+                            </div>
+                            <input type="range" class="slider" id="slider-bg" min="-2" max="2" step="0.1" value="0.0"
+                                oninput="updateGateSim()">
+                        </div>
+                    </div>
+
+                    <!-- Live Gauge Visualizer -->
+                    <div class="gauge-wrapper">
+                        <div
+                            style="display:flex; justify-content:space-between; font-size:0.8rem; margin-bottom:0.35rem;">
+                            <span style="color:var(--accent-cyan); font-weight:700;">Similarity ($z_1$): <span
+                                    id="text-pct-sim">65%</span></span>
+                            <span style="color:var(--accent-purple); font-weight:700;">Spatial Proximity ($z_2$): <span
+                                    id="text-pct-dist">35%</span></span>
+                        </div>
+                        <div class="gauge-bar">
+                            <div id="gauge-sim" class="gauge-segment-left" style="width:65%;">Sim: 0.65</div>
+                            <div id="gauge-dist" class="gauge-segment-right" style="width:35%;">Dist: 0.35</div>
+                        </div>
+                    </div>
+
+                    <div class="math-card">
+                        <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i> Copy</button>
+                        <div style="font-size:0.9rem; color:var(--text-secondary); margin-bottom:0.3rem;">Current
+                            Computed State:</div>
+                        <div>$$\text{Logit: } W_g [z_1 \parallel z_2] + b_g = <span id="math-logit">0.60</span> \implies
+                            g = \sigma(\text{Logit}) = <span id="math-gate-val">0.6457</span>$$</div>
+                        <div>$$z_{\text{fused}} = <span id="math-g-val">0.65</span> \cdot z_1 + <span
+                                id="math-1g-val">0.35</span> \cdot z_2 = <span id="math-zfused"
+                                style="font-weight:700; color:var(--accent-cyan);">1.06</span>$$</div>
+                    </div>
+
+                    <div style="font-size:0.83rem; color:var(--text-muted); margin-top:0.4rem;">
+                        <i data-lucide="info" style="width:13px; display:inline; vertical-align:middle;"></i>
+                        <strong>Biological Rationale:</strong> Near boundary layers with divergent cell types, $W_g [z_1
+                        \parallel z_2]$ shifts $g \to 1$ to preserve sharp transcriptomic borders. In homogeneous tissue
+                        parenchymas, $g$ balances spatial neighbors ($g \to 0.5$) to remove technical dropout noise.
+                    </div>
+                </div>
+            </section>
+
+            <!-- SECTION 4: INTERACTIVE SPATIAL POTTS MRF VISUALIZER -->
+            <section id="sim-potts-mrf">
+                <h2 class="section-title"><i data-lucide="grid" style="color:var(--accent-emerald)"></i> 4. Interactive
+                    Lab: Spatial Potts Consensus & Noise Suppression</h2>
+                <p class="section-desc">
+                    Click on spots in the 5x5 tissue lattice below. Observe how the Spatial Potts Consensus regularizer
+                    $\lambda_{\text{spatial}}$ eliminates isolated salt-and-pepper outliers without blurring regional
+                    tissue borders.
+                </p>
+
+                <div class="interactive-panel card">
+                    <div class="card-title"><i data-lucide="shield-check"></i> Potts MRF Target Modulation: $p_{ik}
+                        \propto p_{\text{dec}, ik} \cdot \exp(\lambda_{\text{spatial}} \sum_j A_{ij} q_{jk})$</div>
+
+                    <div class="control-row">
+                        <div class="control-group">
+                            <div class="control-label">
+                                <span>Potts Spatial Regularization Strength ($\lambda_{\text{spatial}}$)</span>
+                                <strong id="val-lambda">0.15 (Default)</strong>
+                            </div>
+                            <input type="range" class="slider" id="slider-lambda" min="0.0" max="0.5" step="0.01"
+                                value="0.15" oninput="updatePottsGrid()">
+                        </div>
+
+                        <div class="control-group">
+                            <div class="control-label">
+                                <span>Student's t Degrees of Freedom ($\alpha$)</span>
+                                <strong id="val-alpha">1.00</strong>
+                            </div>
+                            <input type="range" class="slider" id="slider-alpha" min="0.5" max="2.5" step="0.1"
+                                value="1.0" oninput="updatePottsGrid()">
+                        </div>
+                    </div>
+
+                    <!-- 5x5 Spot Matrix Display -->
+                    <div style="text-align:center; margin:1rem 0;">
+                        <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.4rem;">5x5 Tissue Section
+                            (Center spot (2,2) is an isolated transcriptomic outlier)</div>
+                        <div class="spot-grid" id="tissue-grid">
+                            <!-- 25 Spots Generated by JS -->
+                        </div>
+                        <div
+                            style="display:flex; justify-content:center; gap:1.25rem; font-size:0.75rem; color:var(--text-secondary); margin-top:0.5rem;">
+                            <span><span
+                                    style="display:inline-block; width:10px; height:10px; border-radius:2px; background:#38bdf8; margin-right:4px;"></span>Cluster
+                                1 (Cyan)</span>
+                            <span><span
+                                    style="display:inline-block; width:10px; height:10px; border-radius:2px; background:#a855f7; margin-right:4px;"></span>Cluster
+                                2 (Purple)</span>
+                            <span><span
+                                    style="display:inline-block; width:10px; height:10px; border-radius:2px; background:#10b981; margin-right:4px;"></span>Cluster
+                                3 (Emerald)</span>
+                        </div>
+                    </div>
+
+                    <div class="grid-2" style="margin-top:1.25rem;">
+                        <div class="card" style="margin-bottom:0; background:rgba(0,0,0,0.25);">
+                            <div class="card-title" style="font-size:0.95rem;">Raw DEC Sharpened ($p_{\text{dec}}$)
+                            </div>
+                            <div style="font-size:0.85rem; color:var(--text-secondary);">
+                                Cluster 1 (Cyan): <strong id="pdec-c1">0.10</strong><br>
+                                Cluster 2 (Purple Outlier): <strong id="pdec-c2"
+                                    style="color:var(--accent-purple);">0.85</strong><br>
+                                Cluster 3 (Emerald): <strong id="pdec-c3">0.05</strong>
+                            </div>
+                            <div style="margin-top:0.4rem; font-size:0.75rem; color:var(--text-muted);">Decides based on
+                                isolated raw signal. Outlier persists!</div>
+                        </div>
+
+                        <div class="card"
+                            style="margin-bottom:0; background:rgba(0,0,0,0.25); border-color:var(--accent-emerald);">
+                            <div class="card-title" style="font-size:0.95rem; color:var(--accent-emerald);">Potts
+                                Modulated Target ($p_{\text{final}}$)</div>
+                            <div style="font-size:0.85rem; color:var(--text-secondary);">
+                                Cluster 1 (Cyan Neighbors): <strong id="pfinal-c1"
+                                    style="color:var(--accent-cyan);">0.78</strong><br>
+                                Cluster 2 (Purple Outlier): <strong id="pfinal-c2">0.20</strong><br>
+                                Cluster 3 (Emerald): <strong id="pfinal-c3">0.02</strong>
+                            </div>
+                            <div style="margin-top:0.4rem; font-size:0.75rem; color:var(--accent-emerald);">
+                                <i data-lucide="check" style="width:12px; display:inline;"></i> Spatial neighborhood
+                                flips outlier into consensus domain!
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- SECTION 5: INTERACTIVE TWO-STAGE OPTIMIZATION STEPPER -->
+            <section id="sim-two-stage">
+                <h2 class="section-title"><i data-lucide="zap" style="color:var(--accent-amber)"></i> 5. Interactive
+                    Lab: Two-Stage Training & Loss Balance</h2>
+                <p class="section-desc">
+                    ASTRA-Redo splits training into Stage 1 (250 epochs pretraining) and Stage 2 (150 epochs Potts DEC
+                    fine-tuning). Toggle between stages to inspect how hyperparameters adapt.
+                </p>
+
+                <div class="interactive-panel card">
+                    <div style="display:flex; gap:0.65rem; margin-bottom:1.15rem; flex-wrap:wrap;">
+                        <button id="btn-stage1" class="tab-btn active"
+                            style="border:1px solid var(--accent-cyan); border-radius:6px;"
+                            onclick="setTrainingStage(1)">
+                            <i data-lucide="play"></i> Stage 1: Representation Pretraining (Ep 1-250)
+                        </button>
+                        <button id="btn-stage2" class="tab-btn"
+                            style="border:1px solid var(--border-color); border-radius:6px;"
+                            onclick="setTrainingStage(2)">
+                            <i data-lucide="target"></i> Stage 2: Potts DEC Fine-Tuning (Ep 251-400)
+                        </button>
+                    </div>
+
+                    <div class="grid-2">
+                        <div>
+                            <div class="card-title" style="font-size:0.95rem;">Active Stage Hyperparameters</div>
+                            <div class="table-wrapper" style="margin:0.5rem 0;">
+                                <table>
+                                    <tr>
+                                        <td>Reconstruction Weight ($\beta$)</td>
+                                        <td><strong id="stage-beta" style="color:var(--accent-cyan);">25.0</strong></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Spatial Contrastive ($\gamma$)</td>
+                                        <td><strong id="stage-gamma">10.0</strong></td>
+                                    </tr>
+                                    <tr>
+                                        <td>DEC KL Divergence ($\lambda_{\text{dec}}$)</td>
+                                        <td><strong id="stage-dec" style="color:var(--text-muted);">0.0
+                                                (Inactive)</strong></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Learning Rate ($lr$)</td>
+                                        <td><strong id="stage-lr">1e-3 (Adam)</strong></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Target $P$ Refresh Interval</td>
+                                        <td><strong id="stage-p-interval">N/A</strong></td>
+                                    </tr>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div>
+                            <div class="card-title" style="font-size:0.95rem;">Live Multi-Task Loss Simulator</div>
+                            <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.6rem;">Adjust
+                                individual components to compute master $\mathcal{L}_{\text{total}}$:</div>
+
+                            <div style="font-size:0.78rem; margin-bottom:0.25rem;">$\mathcal{L}_{\text{rec\_terms}}$
+                                (Reconstruction MSE): <span id="live-rec-val">0.050</span></div>
+                            <input type="range" class="slider" id="slider-lrec" min="0.01" max="0.2" step="0.005"
+                                value="0.05" oninput="calcTotalLoss()">
+
+                            <div style="font-size:0.78rem; margin:0.4rem 0 0.25rem;">$\mathcal{L}_{\text{spatial}}$
+                                (Contrastive): <span id="live-spat-val">0.030</span></div>
+                            <input type="range" class="slider" id="slider-lspat" min="0.005" max="0.1" step="0.005"
+                                value="0.03" oninput="calcTotalLoss()">
+
+                            <div style="font-size:0.78rem; margin:0.4rem 0 0.25rem;">$\mathcal{L}_{\text{KL}}$ (DEC
+                                Divergence): <span id="live-kl-val">0.120</span></div>
+                            <input type="range" class="slider" id="slider-lkl" min="0.0" max="0.5" step="0.01"
+                                value="0.12" oninput="calcTotalLoss()">
+
+                            <div class="math-card" style="margin-top:0.85rem; padding:0.85rem 1rem;">
+                                <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i>
+                                    Copy</button>
+                                $$\mathcal{L}_{\text{total}} = \beta \mathcal{L}_{\text{rec}} + \gamma
+                                \mathcal{L}_{\text{spat}} + \delta \mathcal{L}_{\text{reg}} + \lambda_{\text{dec}}
+                                \mathcal{L}_{\text{KL}} = \mathbf{<span id="live-total-loss"
+                                    style="color:var(--accent-amber);">1.5510</span>}$$
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- SECTION 6: INTERACTIVE DATASET EXPLORER -->
+            <section id="sim-dataset-explorer">
+                <h2 class="section-title"><i data-lucide="database" style="color:var(--accent-purple)"></i> 6.
+                    Interactive Lab: Benchmark Dataset Explorer</h2>
+                <p class="section-desc">
+                    Select from the 6 pre-configured Google Drive benchmarks supported in <code>CHOICES</code> to
+                    inspect their modality pair, dimensions, and preprocessing pathways.
+                </p>
+
+                <div class="dataset-pills">
+                    <button class="ds-pill active" onclick="selectDataset(0)">10x_human_lymph_node_A1</button>
+                    <button class="ds-pill" onclick="selectDataset(1)">10x_human_lymph_node_D1</button>
+                    <button class="ds-pill" onclick="selectDataset(2)">Mouse_Brain_E11_S1</button>
+                    <button class="ds-pill" onclick="selectDataset(3)">Mouse_Brain_E13_S1</button>
+                    <button class="ds-pill" onclick="selectDataset(4)">Mouse_Brain_E15_S1</button>
+                    <button class="ds-pill" onclick="selectDataset(5)">Mouse_Brain_E18_S1</button>
+                </div>
+
+                <div class="card" id="ds-card">
+                    <div class="card-title">
+                        <span id="ds-name">10x_human_lymph_node_A1</span>
+                        <span class="badge badge-cyan" id="ds-modality-badge">CITE-seq ADT</span>
+                    </div>
+
+                    <div class="grid-3" style="margin:0.85rem 0;">
+                        <div
+                            style="background:rgba(255,255,255,0.02); padding:0.85rem; border-radius:8px; border:1px solid var(--border-color);">
+                            <div style="font-size:0.72rem; color:var(--text-muted); text-transform:uppercase;">Primary
+                                Modality</div>
+                            <div style="font-weight:700; font-size:0.95rem; color:var(--accent-cyan);" id="ds-mod1">
+                                Spatial Transcriptomics (RNA)</div>
+                            <div style="font-size:0.78rem; color:var(--text-secondary);">3,000 Seurat v3 HVGs</div>
+                        </div>
+
+                        <div
+                            style="background:rgba(255,255,255,0.02); padding:0.85rem; border-radius:8px; border:1px solid var(--border-color);">
+                            <div style="font-size:0.72rem; color:var(--text-muted); text-transform:uppercase;">Secondary
+                                Modality</div>
+                            <div style="font-weight:700; font-size:0.95rem; color:var(--accent-purple);" id="ds-mod2">
+                                CITE-seq Antibody (ADT)</div>
+                            <div style="font-size:0.78rem; color:var(--text-secondary);" id="ds-mod2-prep">Seurat Spot
+                                CLR + Scale</div>
+                        </div>
+
+                        <div
+                            style="background:rgba(255,255,255,0.02); padding:0.85rem; border-radius:8px; border:1px solid var(--border-color);">
+                            <div style="font-size:0.72rem; color:var(--text-muted); text-transform:uppercase;">Ground
+                                Truth Reference</div>
+                            <div style="font-weight:700; font-size:0.95rem; color:var(--accent-emerald);" id="ds-gt">
+                                annotation.csv ('manual-anno')</div>
+                            <div style="font-size:0.78rem; color:var(--text-secondary);" id="ds-clusters">~9 Expert
+                                Anatomical Domains</div>
+                        </div>
+                    </div>
+
+                    <div
+                        style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-top:0.4rem;">
+                        <div style="font-size:0.82rem; color:var(--text-muted);">
+                            Biological Tissue: <span id="ds-bio" style="color:var(--text-primary);">Human Lymph Node
+                                Section A1 (Germinal Centers, Mantle Zones, T-Cell Interfollicular Cortex)</span>
+                        </div>
+                        <a id="ds-url" href="https://drive.google.com/drive/folders/10z1N4MwW8Y49o8GlkYGBKVx1N7fiMuyC"
+                            target="_blank" class="toggle-btn" style="text-decoration:none;">
+                            <i data-lucide="external-link" style="width:13px;"></i> Google Drive Folder
+                        </a>
+                    </div>
+                </div>
+            </section>
+
+            <!-- SECTION 7: UNIVERSAL PREPROCESSING ENGINE -->
+            <section id="preprocessing">
+                <h2 class="section-title"><i data-lucide="filter" style="color:var(--accent-emerald)"></i> 7. Universal
+                    Multi-Omics Preprocessing Engine</h2>
+                <p class="section-desc">
+                    Implemented in lines 70–126 of <code>astra-redo.py</code>. Seamlessly branches between CITE-seq ADT
+                    antibody matrices and spatial ATAC chromatin accessibility peak matrices.
+                </p>
+
+                <div class="tab-container card">
+                    <div class="tab-header">
+                        <button class="tab-btn active" onclick="switchTab(event, 'tab-rna')">RNA Modality
+                            Pipeline</button>
+                        <button class="tab-btn" onclick="switchTab(event, 'tab-adt')">ADT Modality (Seurat CLR)</button>
+                        <button class="tab-btn" onclick="switchTab(event, 'tab-atac')">ATAC Modality (TF-IDF +
+                            PCA)</button>
+                    </div>
+
+                    <div id="tab-rna" class="tab-pane active">
+                        <h3 style="font-size:1.05rem; margin-bottom:0.65rem;">Transcriptomic Normalization & HVG
+                            Filtering</h3>
+                        <p style="color:var(--text-secondary); font-size:0.9rem; margin-bottom:0.85rem;">
+                            Genes with fewer than 10 cell detections are eliminated. Next, 3,000 Highly Variable Genes
+                            (HVGs) are isolated using Seurat v3 dispersion analysis, scaled to 10,000 counts per cell,
+                            log-transformed, and standardized to zero-mean and unit-variance.
+                        </p>
+                        <div class="math-card">
+                            <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i> Copy</button>
+                            $$\text{HVG Selection: } \text{Var}_{\text{adj}}(g) \quad \text{via Seurat v3 negative
+                            binomial variance dispersion}$$
+                            $$x_{ij}' = \ln\left(1 + \frac{x_{ij}}{\sum_{k} x_{ik}} \times 10^4\right), \quad z_{ij} =
+                            \frac{x_{ij}' - \mu_j}{\sigma_j}$$
+                        </div>
+                        <pre><button class="copy-btn" onclick="copyCode(this)"><i data-lucide="copy"></i> Copy</button><code># Lines 93-108 in astra-redo.py
+sc.pp.filter_genes(adata_RNA, min_cells=10)
+sc.pp.highly_variable_genes(adata_RNA, flavor="seurat_v3", n_top_genes=3000)
+sc.pp.normalize_total(adata_RNA, target_sum=1e4)
+sc.pp.log1p(adata_RNA)
+sc.pp.scale(adata_RNA)</code></pre>
+                    </div>
+
+                    <div id="tab-adt" class="tab-pane">
+                        <h3 style="font-size:1.05rem; margin-bottom:0.65rem;">Antibody-Derived Tag (ADT) Centered Log
+                            Ratio (CLR)</h3>
+                        <p style="color:var(--text-secondary); font-size:0.9rem; margin-bottom:0.85rem;">
+                            Antibody tag counts suffer from non-specific background binding and scale variations. The
+                            Seurat-style CLR computes geometric mean across non-zero features per spot, regularized by
+                            $10^{-12}$:
+                        </p>
+                        <div class="math-card">
+                            <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i> Copy</button>
+                            $$\mu_{\ln}(x) = \frac{1}{|x|} \sum_{i: x_i > 0} \ln(1 + x_i)$$
+                            $$G(x) = \exp(\mu_{\ln}(x))$$
+                            $$\text{seurat\_clr}(x_i) = \ln\left(1 + \frac{x_i}{G(x) + 10^{-12}}\right)$$
+                        </div>
+                        <pre><button class="copy-btn" onclick="copyCode(this)"><i data-lucide="copy"></i> Copy</button><code># Lines 70-81 in astra-redo.py
+def clr_normalize_each_cell(adata, inplace=True):
+    def seurat_clr(x):
+        s = np.sum(np.log1p(x[x > 0]))
+        exp = np.exp(s / len(x)) if len(x) > 0 else 1.0
+        return np.log1p(x / (exp + 1e-12))
+    ...
+    adata.X = np.apply_along_axis(seurat_clr, 1, X)</code></pre>
+                    </div>
+
+                    <div id="tab-atac" class="tab-pane">
+                        <h3 style="font-size:1.05rem; margin-bottom:0.65rem;">Spatial ATAC-seq Epigenomic Peak
+                            Normalization</h3>
+                        <p style="color:var(--text-secondary); font-size:0.9rem; margin-bottom:0.85rem;">
+                            Chromatin accessibility peak counts are sparse binary indicators. A Term Frequency - Inverse
+                            Document Frequency (TF-IDF) transformation down-weights ubiquitously open chromatin regions
+                            and amplifies cell-type-specific accessible loci, followed by 50-component PCA.
+                        </p>
+                        <div class="math-card">
+                            <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i> Copy</button>
+                            $$\text{IDF}_j = \frac{N_{\text{spots}}}{\sum_{i=1}^{N_{\text{spots}}} X_{ij} + 10^{-12}},
+                            \quad \text{TF}_{ij} = \frac{X_{ij}}{\sum_{k=1}^{M_{\text{peaks}}} X_{ik} + 10^{-12}}$$
+                            $$\text{TF-IDF}(X)_{ij} = \text{TF}_{ij} \cdot \text{IDF}_j$$
+                            $$Z_{\text{atac}} = \text{PCA}_{50}(\ln(1 + \text{Normalize}(\text{TF-IDF}(X))))$$
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- SECTION 8: DUAL GRAPH TOPOLOGY -->
+            <section id="dual-graph">
+                <h2 class="section-title"><i data-lucide="share-2" style="color:var(--accent-blue)"></i> 8. Dual-Graph
+                    Topology & Spatial Adjacency Construction</h2>
+                <p class="section-desc">
+                    Implemented in lines 128–186. ASTRA-Redo constructs three distinct graph topologies and an MRF Potts
+                    consensus matrix to guide message passing across physical coordinates and functional similarities.
+                </p>
+
+                <div class="grid-2">
+                    <div class="card">
+                        <div class="card-title"><span class="badge badge-cyan">Topology 1</span> Cosine Feature Graph
+                            ($G_{\text{sim}}$)</div>
+                        <p style="color:var(--text-secondary); font-size:0.88rem;">
+                            Built on RNA HVGs ($3000$ dimensions). Nearest neighbors ($k=15$) are identified using
+                            cosine distance. Symmetrized: if $j \in \text{kNN}(i)$ or $i \in \text{kNN}(j)$, edge $(i,j)
+                            \in \mathcal{E}_{\text{sim}}$. Edge weights equal pairwise cosine similarities.
+                        </p>
+                        <div class="math-card">
+                            <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i> Copy</button>
+                            $$S_{ij}^{\cos} = \frac{x_i \cdot x_j}{\|x_i\|_2 \|x_j\|_2 + 10^{-12}}$$
+                            $$A_{ij}^{\text{sim}} = \mathbb{I}(j \in \text{KNN}(i) \lor i \in \text{KNN}(j)) \cdot
+                            S_{ij}^{\cos}$$
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-title"><span class="badge badge-purple">Topology 2</span> Spatial Distance
+                            Graph ($G_{\text{dist}}$)</div>
+                        <p style="color:var(--text-secondary); font-size:0.88rem;">
+                            Built on physical tissue 2D coordinates $(x,y)$. Uses Euclidean kNN ($k=15$) and symmetrized
+                            via maximum operation: $A_{\text{dist}} = \max(A, A^T)$. Edge weights represent Euclidean
+                            distance.
+                        </p>
+                        <div class="math-card">
+                            <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i> Copy</button>
+                            $$d_{ij} = \|(x_i, y_i) - (x_j, y_j)\|_2$$
+                            $$A_{\text{dist}} = \max(A_{\text{knn}}, A_{\text{knn}}^T)$$
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid-2">
+                    <div class="card">
+                        <div class="card-title"><span class="badge badge-emerald">Topology 3</span> Intersection
+                            Consensus Graph ($G_{\text{common}}$)</div>
+                        <p style="color:var(--text-secondary); font-size:0.88rem;">
+                            The auxiliary modality (protein/chromatin) propagates solely across the rigorous set
+                            intersection:
+                        </p>
+                        <div class="math-card">
+                            <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i> Copy</button>
+                            $$\mathcal{E}_{\text{common}} = \mathcal{E}_{\text{sim}} \cap \mathcal{E}_{\text{dist}}$$
+                            $$W_{ij}^{\text{common}} = 1.0 \quad \forall (i,j) \in \mathcal{E}_{\text{common}}$$
+                        </div>
+                        <p style="font-size:0.82rem; color:var(--text-muted); margin-top:0.4rem;">
+                            Guarantees that auxiliary omics message passing occurs exclusively between spots that are
+                            <em>simultaneously</em> physical neighbors and transcriptomically correlated!
+                        </p>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-title"><span class="badge badge-amber">MRF Operator</span> Potts Row-Normalized
+                            Spatial Adjacency</div>
+                        <p style="color:var(--text-secondary); font-size:0.88rem;">
+                            Constructed by adding self-loops to physical spatial adjacency and row-normalizing by
+                            degree:
+                        </p>
+                        <div class="math-card">
+                            <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i> Copy</button>
+                            $$\tilde{A} = A_{\text{dist}} + I_N$$
+                            $$D_{ii} = \sum_{j=1}^N \tilde{A}_{ij}$$
+                            $$A_{\text{norm}} = D^{-1} \tilde{A}$$
+                        </div>
+                        <p style="font-size:0.82rem; color:var(--text-muted); margin-top:0.4rem;">
+                            Used during DEC target distribution calculation to smooth cluster assignments locally.
+                        </p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- SECTION 9: GATED ATTENTION NEURAL BACKBONE -->
+            <section id="gated-fusion">
+                <h2 class="section-title"><i data-lucide="cpu" style="color:var(--accent-cyan)"></i> 9. Deep Neural
+                    Architecture & Decoupled Decoders</h2>
+                <p class="section-desc">
+                    Implemented in lines 188–304. Dual-branch Graph Convolutional Networks with two-tier gated attention
+                    fusion and multi-task reconstruction decoders.
+                </p>
+
+                <div class="card">
+                    <div class="card-title"><i data-lucide="minimize-2"></i> Decoupled Multi-Task Decoders</div>
+                    <p style="color:var(--text-secondary); font-size:0.88rem; margin-bottom:0.75rem;">
+                        To prevent representation collapse, ASTRA-Redo employs 4 distinct decoders reconstructing the
+                        separate branch inputs:
+                    </p>
+                    <div class="table-wrapper">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Decoder Name</th>
+                                    <th>Input Embedding</th>
+                                    <th>Target Output</th>
+                                    <th>Architecture</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><code>reconstruct_joint</code></td>
+                                    <td>$z_{\text{fused\_pro}} \in \mathbb{R}^{64}$</td>
+                                    <td>Joint $[X_{\text{RNA}} \parallel X_{\text{ADT}}] \in \mathbb{R}^{3000 +
+                                        D_{\text{aux}}}$</td>
+                                    <td>$\text{Linear}(64 \to 512) \to \text{ReLU} \to \text{Linear}(512 \to 3000 +
+                                        D_{\text{aux}})$</td>
+                                </tr>
+                                <tr>
+                                    <td><code>reconstruct_rna (sim)</code></td>
+                                    <td>$z_{\text{sim}} \in \mathbb{R}^{64}$</td>
+                                    <td>RNA $X_{\text{RNA}} \in \mathbb{R}^{3000}$</td>
+                                    <td>$\text{Linear}(64 \to 512) \to \text{ReLU} \to \text{Linear}(512 \to 3000)$</td>
+                                </tr>
+                                <tr>
+                                    <td><code>reconstruct_rna (dist)</code></td>
+                                    <td>$z_{\text{dist}} \in \mathbb{R}^{64}$</td>
+                                    <td>RNA $X_{\text{RNA}} \in \mathbb{R}^{3000}$</td>
+                                    <td>$\text{Linear}(64 \to 512) \to \text{ReLU} \to \text{Linear}(512 \to 3000)$</td>
+                                </tr>
+                                <tr>
+                                    <td><code>reconstruct_aux</code></td>
+                                    <td>$z_{\text{pro}} \in \mathbb{R}^{64}$</td>
+                                    <td>Auxiliary $X_{\text{ADT}} \in \mathbb{R}^{D_{\text{aux}}}$</td>
+                                    <td>$\text{Linear}(64 \to 512) \to \text{ReLU} \to \text{Linear}(512 \to
+                                        D_{\text{aux}})$</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- SECTION 10: SPATIAL POTTS DEC -->
+            <section id="potts-dec">
+                <h2 class="section-title"><i data-lucide="target" style="color:var(--accent-rose)"></i> 10. Spatial
+                    Potts MRF Deep Embedding Clustering</h2>
+                <p class="section-desc">
+                    Implemented in lines 211–254. Standard Deep Embedding Clustering (DEC) sharpens cluster assignments
+                    using Student's t-distribution but is blind to spatial organization. ASTRA-Redo introduces a spatial
+                    Potts Markov Random Field consensus mechanism that injects neighborhood affinity into the target
+                    distribution $P$.
+                </p>
+
+                <div class="grid-2">
+                    <div class="card">
+                        <div class="card-title">1. Soft Assignment Matrix $Q$</div>
+                        <p style="color:var(--text-secondary); font-size:0.88rem;">
+                            Calculates Student's t-distribution similarity between latent embedding $z_i$ and learnable
+                            prototype centroids $\mu_k \in \mathbb{R}^{64}$ ($k=1,\dots,K$, with degrees of freedom
+                            $\alpha=1.0$):
+                        </p>
+                        <div class="math-card">
+                            <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i> Copy</button>
+                            $$q_{ik} = \frac{\left(1 + \frac{\|z_i - \mu_k\|_2^2}{\alpha}\right)^{-\frac{\alpha +
+                            1}{2}}}{\sum_{k'=1}^K \left(1 + \frac{\|z_i - \mu_{k'}\|_2^2}{\alpha}\right)^{-\frac{\alpha
+                            + 1}{2}}}$$
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-title">2. DEC Cluster Sharpening ($P_{\text{dec}}$)</div>
+                        <p style="color:var(--text-secondary); font-size:0.88rem;">
+                            Squares probability values to emphasize high-confidence assignments and normalizes by
+                            cluster frequencies $\sum_i q_{ik}$ to prevent large clusters from dominating:
+                        </p>
+                        <div class="math-card">
+                            <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i> Copy</button>
+                            $$p_{\text{dec}, ik} = \frac{q_{ik}^2 / \sum_{i=1}^N q_{ik}}{\sum_{k'=1}^K \left(q_{ik'}^2 /
+                            \sum_{i=1}^N q_{ik'}\right)}$$
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card" style="border-left: 4px solid var(--accent-rose);">
+                    <div class="card-title"><span class="badge badge-purple">Key Innovation</span> 3. Spatial Potts
+                        Neighborhood Consensus ($P_{\text{spatial}}$)</div>
+                    <p style="color:var(--text-secondary); font-size:0.9rem; margin-bottom:0.65rem;">
+                        ASTRA-Redo computes spatial neighborhood consensus by taking the matrix product of the
+                        row-normalized spatial adjacency $A_{\text{norm}}$ and the soft assignment matrix $Q$:
+                    </p>
+                    <div class="math-card">
+                        <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i> Copy</button>
+                        $$\text{Consensus} = A_{\text{norm}} \cdot Q \in \mathbb{R}^{N \times K}, \quad
+                        \text{Consensus}_{ik} = \sum_{j=1}^N (A_{\text{norm}})_{ij} q_{jk}$$
+                    </div>
+                    <p
+                        style="color:var(--text-secondary); font-size:0.9rem; margin-top:0.65rem; margin-bottom:0.65rem;">
+                        The sharpened target distribution is then exponentiated with the Potts consensus energy scaled
+                        by $\lambda_{\text{spatial}} = 0.15$ and renormalized across all clusters:
+                    </p>
+                    <div class="math-card">
+                        <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i> Copy</button>
+                        $$p_{\text{final}, ik} = \frac{p_{\text{dec}, ik} \cdot \exp\left(\lambda_{\text{spatial}} \cdot
+                        \text{Consensus}_{ik}\right)}{\sum_{k'=1}^K p_{\text{dec}, ik'} \cdot
+                        \exp\left(\lambda_{\text{spatial}} \cdot \text{Consensus}_{ik'}\right)}$$
+                    </div>
+                    <p style="color:var(--text-secondary); font-size:0.9rem; margin-top:0.65rem;">
+                        Finally, the network is trained by minimizing the batch-mean Kullback-Leibler (KL) divergence
+                        between $Q$ and $P_{\text{final}}$:
+                    </p>
+                    <div class="math-card">
+                        <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i> Copy</button>
+                        $$\mathcal{L}_{\text{KL}} = \text{KL}(Q \parallel P_{\text{final}}) = \frac{1}{N} \sum_{i=1}^N
+                        \sum_{k=1}^K p_{\text{final}, ik} \ln\left(\frac{p_{\text{final}, ik}}{q_{ik}}\right)$$
+                    </div>
+                </div>
+            </section>
+
+            <!-- SECTION 11: TWO-STAGE TRAINING & BRIDGE TRANSITION -->
+            <section id="training-engine">
+                <h2 class="section-title"><i data-lucide="play-circle" style="color:var(--accent-amber)"></i> 11.
+                    Two-Stage Training & Bridge Transition Engine</h2>
+                <p class="section-desc">
+                    Implemented in lines 422–638 (<code>train_model_dec</code>). Follows a 250-epoch representation
+                    learning phase, a peak checkpoint restoration bridge, and a 150-epoch DEC fine-tuning phase.
+                </p>
+
+                <div class="diagram-container">
+                    <div class="diagram-title"><i data-lucide="git-commit"></i> Complete 400-Epoch Optimization
+                        Trajectory</div>
+                    <div class="mermaid">
+                        flowchart TD
+                        subgraph Stage1 ["Stage 1: Representation Pretraining (Epochs 1-250)"]
+                        S1_Fwd["Forward DualGCN_Gated<br />compute_dec = False"]
+                        S1_Loss["Compute Multi-Task Loss:<br />L_tot = β · L_rec + γ · L_spatial + δ · L_reg<br />(β =
+                        25.0, γ = 10.0, δ = 1.0)"]
+                        S1_Opt["Adam Optimizer (lr = 1e-3)"]
+                        S1_Eval["Evaluate Latent Space via KMeans<br />Track Silhouette Score & ARI"]
+                        S1_Save["Checkpoint Best Stage 1 Model State (Peak Sil)"]
+                        S1_Fwd --> S1_Loss --> S1_Opt --> S1_Eval --> S1_Save
+                        end
+
+                        subgraph Bridge ["Bridge Transition (At Epoch 250)"]
+                        B_Restore["Restore Peak Stage 1 Model State (model.load_state_dict)"]
+                        B_Extract["Extract Aligned Latent Embeddings (z_fused_pro_best)"]
+                        B_KMeans["Fit KMeans (n_init = 20) on Latent Space"]
+                        B_Init["Initialize DEC Prototypes:<br />model.dec.cluster_centers = kmeans.centers"]
+                        B_Restore --> B_Extract --> B_KMeans --> B_Init
+                        end
+
+                        subgraph Stage2 ["Stage 2: Spatial Potts Consensus DEC (Epochs 251-400)"]
+                        S2_Target["Update Spatial Target Distribution P (every 5 epochs):<br />P_potts ∝ P_dec ·
+                        exp(λ_spatial · A_norm Q)"]
+                        S2_Fwd["Forward Pass with DEC Enabled<br />Compute Soft Assignments Q and KL(Q ∥ P)"]
+                        S2_Attenuate["Reconstruction Moderation:<br />Cut β by 80% (β_curr = 5.0) to empower DEC
+                        gradients"]
+                        S2_Loss["Compute DEC Total Loss:<br />L_tot = 5.0 · L_rec + 10.0 · L_spatial + L_reg + 1.0 ·
+                        L_KL"]
+                        S2_Opt["Adam Optimizer (lr = 1e-4, 10x smaller)"]
+                        S2_Select["Dual Evaluation: argmax(Q) vs KMeans(z)<br />Track Global Peak Silhouette"]
+                        S2_Target --> S2_Fwd --> S2_Attenuate --> S2_Loss --> S2_Opt --> S2_Select
+                        end
+
+                        Stage1 --> Bridge
+                        Bridge --> Stage2
+                        S2_Select --> Final_Restore["Restore Global Best Model Weights<br />Export Final Latent Manifold
+                        & Domain Labels"]
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title"><span class="badge badge-emerald">Bridge Transition</span> Why Restore Peak
+                        Stage 1 Weights?</div>
+                    <p style="color:var(--text-secondary); font-size:0.9rem;">
+                        In standard training routines, epoch 250 is used directly to initialize DEC. However, epoch 250
+                        may be overfitted or sub-optimal. ASTRA-Redo incorporates a strict <strong>checkpoint
+                            restoration bridge</strong>:
+                    </p>
+                    <pre><button class="copy-btn" onclick="copyCode(this)"><i data-lucide="copy"></i> Copy</button><code># Lines 530-542 in astra-redo.py
+print(f"[Bridge Transition] Restoring peak Stage-1 model weights (Sil = {best_sil_stage1:.4f} @ Ep {best_epoch_stage1})...")
+if best_model_state_stage1 is not None:
+    model.load_state_dict(best_model_state_stage1)
+
+with torch.no_grad():
+    _, _, _, fused_pro_best, _, _, _ = model(data, compute_dec=False)
+    best_emb_aligned = fused_pro_best.cpu().numpy()
+
+kmeans_init = KMeans(n_clusters=num_clusters, n_init=20, random_state=seed)
+kmeans_init.fit(best_emb_aligned)
+model.init_cluster_centers(kmeans_init.cluster_centers_)</code></pre>
+                </div>
+
+                <div class="card">
+                    <div class="card-title"><span class="badge badge-amber">Reconstruction Moderation</span> Decoupled
+                        Loss Balancing in Stage 2</div>
+                    <p style="color:var(--text-secondary); font-size:0.9rem;">
+                        In Stage 1, $\beta = 25.0$ enforces faithful multi-omics reconstruction. If kept at $25.0$
+                        during Stage 2, the gradient of the reconstruction loss completely drowns out the DEC KL
+                        divergence, preventing cluster refinement. ASTRA-Redo scales down $\beta$ by $80\%$:
+                    </p>
+                    <div class="math-card">
+                        <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i> Copy</button>
+                        $$\beta_{\text{curr}} = \begin{cases} \beta = 25.0 & \text{Stage 1 (Pre-training)} \\ 0.2 \times
+                        \beta = 5.0 & \text{Stage 2 (DEC Fine-Tuning)} \end{cases}$$
+                    </div>
+                </div>
+            </section>
+
+            <!-- SECTION 12: LOSS FORMULATION -->
+            <section id="loss-formulation">
+                <h2 class="section-title"><i data-lucide="sigma" style="color:var(--accent-cyan)"></i> 12. Comprehensive
+                    Mathematical Loss Formulation</h2>
+                <p class="section-desc">
+                    Implemented in lines 342–378. The optimization objective harmonizes multi-task feature fidelity,
+                    spatial contrastive topology preservation, weight sparsity, and clustering entropy.
+                </p>
+
+                <div class="grid-2">
+                    <div class="card">
+                        <div class="card-title">1. Multi-Task Reconstruction Losses</div>
+                        <div class="math-card">
+                            <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i> Copy</button>
+                            $$\mathcal{L}_{\text{rec}} = \frac{1}{N} \sum_{i=1}^N \| [X_{\text{RNA}} \parallel
+                            X_{\text{ADT}}]_i - \hat{X}_{\text{joint}, i} \|_2^2$$
+                            $$\mathcal{L}_{\text{sim}} = \frac{1}{N} \sum_{i=1}^N \| X_{\text{RNA}, i} -
+                            \hat{X}_{\text{sim}, i} \|_2^2$$
+                            $$\mathcal{L}_{\text{dist}} = \frac{1}{N} \sum_{i=1}^N \| X_{\text{RNA}, i} -
+                            \hat{X}_{\text{dist}, i} \|_2^2$$
+                            $$\mathcal{L}_{\text{aux}} = \frac{1}{N} \sum_{i=1}^N \| X_{\text{ADT}, i} -
+                            \hat{X}_{\text{aux}, i} \|_2^2$$
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-title">2. Spatial Regularization Contrastive Loss</div>
+                        <p style="color:var(--text-secondary); font-size:0.86rem; margin-bottom:0.45rem;">
+                            Enforces latent cosine similarity between physical neighbors while penalizing similarity
+                            between non-neighbors:
+                        </p>
+                        <div class="math-card">
+                            <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i> Copy</button>
+                            $$S_{ij} = \frac{z_{\text{fused}, i} \cdot z_{\text{fused}, j}}{\|z_{\text{fused}, i}\|_2
+                            \|z_{\text{fused}, j}\|_2 + 10^{-12}}, \quad \tilde{S}_{ij} = \sigma(S_{ij})$$
+                            $$\mathcal{L}_{\text{spatial}} = -\frac{1}{2} \left[ \frac{1}{|\mathcal{E}|}
+                            \sum_{(i,j)\in\mathcal{E}} \ln(\tilde{S}_{ij}) + \frac{1}{|\mathcal{E}^c|}
+                            \sum_{(i,j)\notin\mathcal{E}} \ln(1 - \tilde{S}_{ij}) \right]$$
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">3. Regularization & Master Objective Equation</div>
+                    <div class="math-card">
+                        <button class="copy-btn" onclick="copyMath(this)"><i data-lucide="copy"></i> Copy</button>
+                        $$\mathcal{L}_{\text{reg}} = \lambda_{L_1} \sum_{\theta \in \Theta} |\theta| + \lambda_{L_2}
+                        \sum_{\theta \in \Theta} \theta^2 \quad (\lambda_{L_1} = 10^{-4}, \lambda_{L_2} = 10^{-3})$$
+                        $$\mathcal{L}_{\text{total}} = \beta_{\text{curr}} \left( \mathcal{L}_{\text{rec}} +
+                        \mathcal{L}_{\text{sim}} + \mathcal{L}_{\text{dist}} + \mathcal{L}_{\text{aux}} \right) + \gamma
+                        \mathcal{L}_{\text{spatial}} + \delta \mathcal{L}_{\text{reg}} + \mathbb{I}(\text{Stage 2})
+                        \cdot \lambda_{\text{dec}} \mathcal{L}_{\text{KL}}$$
+                    </div>
+
+                    <div class="table-wrapper">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Hyperparameter</th>
+                                    <th>Default Value</th>
+                                    <th>Functional Role</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><code>beta</code> ($\beta$)</td>
+                                    <td>$25.0$ (Stage 1) / $5.0$ (Stage 2)</td>
+                                    <td>Reconstruction loss weighting; scales joint and branch reconstruction MSE</td>
+                                </tr>
+                                <tr>
+                                    <td><code>gamma</code> ($\gamma$)</td>
+                                    <td>$10.0$</td>
+                                    <td>Spatial contrastive loss weighting; maintains tissue neighborhood topology</td>
+                                </tr>
+                                <tr>
+                                    <td><code>delta</code> ($\delta$)</td>
+                                    <td>$1.0$</td>
+                                    <td>Weight regularization factor for $L_1$ sparsity and $L_2$ weight decay</td>
+                                </tr>
+                                <tr>
+                                    <td><code>lambda_dec</code> ($\lambda_{\text{dec}}$)</td>
+                                    <td>$1.0$</td>
+                                    <td>Kullback-Leibler divergence clustering objective weight in Stage 2</td>
+                                </tr>
+                                <tr>
+                                    <td><code>lambda_spatial</code> ($\lambda_{\text{spatial}}$)</td>
+                                    <td>$0.15$</td>
+                                    <td>Potts Markov Random Field spatial consensus smoothing parameter</td>
+                                </tr>
+                                <tr>
+                                    <td><code>lr</code> (Stage 1 / 2)</td>
+                                    <td>$10^{-3}$ / $10^{-4}$</td>
+                                    <td>Adam learning rate; decelerated by $10\times$ during DEC fine-tuning</td>
+                                </tr>
+                                <tr>
+                                    <td><code>p_update_interval</code></td>
+                                    <td>$5$</td>
+                                    <td>Target distribution $P_{\text{final}}$ refresh frequency in epochs</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- SECTION 13: VISUALIZATIONS -->
+            <section id="visualizations">
+                <h2 class="section-title"><i data-lucide="pie-chart" style="color:var(--accent-purple)"></i> 13. Visual
+                    Diagnostics & Evaluation Framework</h2>
+                <p class="section-desc">
+                    Implemented in lines 692–816. ASTRA-Redo automatically generates publication-ready figures saved in
+                    <code>plots/</code> subdirectories:
+                </p>
+
+                <div class="grid-2">
+                    <div class="card">
+                        <div class="card-title"><span class="badge badge-cyan">Plot 1</span> Training Trajectory Curves
+                            (<code>plots/curves/</code>)</div>
+                        <p style="color:var(--text-secondary); font-size:0.88rem;">
+                            3-panel high-resolution plots:
+                            <br>• <strong>Panel 1:</strong> Loss curves (Total, Joint Recon, Spatial, KL,
+                            $L_{\text{sim}}$, $L_{\text{dist}}$, $L_{\text{aux}}$).
+                            <br>• <strong>Panel 2:</strong> Epoch-by-epoch Silhouette score progression.
+                            <br>• <strong>Panel 3:</strong> Adjusted Rand Index (ARI) tracking against ground truth
+                            annotations.
+                        </p>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-title"><span class="badge badge-purple">Plot 2</span> Spatial Domain
+                            Cartography (<code>plots/spatial/</code>)</div>
+                        <p style="color:var(--text-secondary); font-size:0.88rem;">
+                            Side-by-side scatter plots mapped on true physical coordinates $(x,y)$:
+                            <br>• <strong>Panel 1:</strong> Ground Truth biological domain annotations.
+                            <br>• <strong>Panel 2:</strong> ASTRA-Redo predicted spatial domains, labeled with the ARI
+                            achieved.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="grid-2">
+                    <div class="card">
+                        <div class="card-title"><span class="badge badge-emerald">Plot 3</span> Joint Latent Space UMAP
+                            (<code>plots/umap/</code>)</div>
+                        <p style="color:var(--text-secondary); font-size:0.88rem;">
+                            Non-linear dimension reduction on 64-dimensional fused manifold $z_{\text{fused\_pro}}$:
+                            <br>• <strong>Panel 1:</strong> UMAP colored by Ground Truth annotations.
+                            <br>• <strong>Panel 2:</strong> UMAP colored by Predicted Domains, labeled with Silhouette
+                            score.
+                        </p>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-title"><span class="badge badge-amber">Plot 4</span> Cluster Profiles & Violin
+                            Plots (<code>plots/violin/</code>)</div>
+                        <p style="color:var(--text-secondary); font-size:0.88rem;">
+                            Distributional validation across predicted clusters:
+                            <br>• <strong>Panel 1:</strong> Per-sample silhouette coefficient distributions with mean
+                            threshold.
+                            <br>• <strong>Panel 2:</strong> First latent dimension ($z[:, 0]$) distribution across
+                            domains.
+                        </p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- SECTION 14: GRANULAR CODE MAP -->
+            <section id="code-map">
+                <h2 class="section-title"><i data-lucide="file-code-2" style="color:var(--accent-cyan)"></i> 14.
+                    Granular File & Method Reference</h2>
+                <p class="section-desc">
+                    Complete catalog of classes, functions, and modules in <code>astra-redo.py</code> with exact line
+                    coordinates. Use the search box below to filter.
+                </p>
+
+                <input type="text" id="api-search" class="search-box"
+                    placeholder="Search functions, classes, or keywords (e.g. Potts, CLR, DualGCN)..."
+                    oninput="filterApiList()">
+
+                <div id="api-container">
+                    <!-- Item 1 -->
+                    <div class="card api-item">
+                        <div class="card-title">
+                            <code>set_seed(seed=42)</code>
+                            <span class="badge badge-cyan">Lines 47-58</span>
+                        </div>
+                        <p style="color:var(--text-secondary); font-size:0.86rem;">
+                            Sets deterministic seed across Python <code>random</code>, <code>numpy</code>,
+                            <code>torch.manual_seed</code>, <code>torch.cuda.manual_seed_all</code>, cuDNN deterministic
+                            backend, and sets <code>PYTHONHASHSEED</code>.
+                        </p>
+                    </div>
+
+                    <!-- Item 2 -->
+                    <div class="card api-item">
+                        <div class="card-title">
+                            <code>clr_normalize_each_cell(adata, inplace=True)</code>
+                            <span class="badge badge-cyan">Lines 70-81</span>
+                        </div>
+                        <p style="color:var(--text-secondary); font-size:0.86rem;">
+                            Applies Seurat-style Centered Log Ratio (CLR) normalization on CITE-seq ADT count matrices
+                            along axis 1 (per cell/spot).
+                        </p>
+                    </div>
+
+                    <!-- Item 3 -->
+                    <div class="card api-item">
+                        <div class="card-title">
+                            <code>tfidf(X)</code>
+                            <span class="badge badge-cyan">Lines 83-90</span>
+                        </div>
+                        <p style="color:var(--text-secondary); font-size:0.86rem;">
+                            Computes Term Frequency - Inverse Document Frequency (TF-IDF) normalization on ATAC-seq peak
+                            counts for sparse CSR or dense matrices.
+                        </p>
+                    </div>
+
+                    <!-- Item 4 -->
+                    <div class="card api-item">
+                        <div class="card-title">
+                            <code>preprocess_universal(adata_RNA, adata_omics2, dataset_name, n_hvg=3000)</code>
+                            <span class="badge badge-cyan">Lines 92-126</span>
+                        </div>
+                        <p style="color:var(--text-secondary); font-size:0.86rem;">
+                            Filters RNA min cells, computes 3000 Seurat v3 HVGs, scales RNA, and branches secondary
+                            modality (ADT $\to$ CLR + Scale; ATAC $\to$ TF-IDF + Norm + PCA 50).
+                        </p>
+                    </div>
+
+                    <!-- Item 5 -->
+                    <div class="card api-item">
+                        <div class="card-title">
+                            <code>build_dual_graph(RNA_expression, ADT_expression, cell_positions, device='cpu', num_neighbors=15)</code>
+                            <span class="badge badge-cyan">Lines 141-178</span>
+                        </div>
+                        <p style="color:var(--text-secondary); font-size:0.86rem;">
+                            Builds Cosine feature kNN, spatial Euclidean distance kNN, intersection consensus graph
+                            $\mathcal{E}_{\text{common}}$, and returns <code>DualGraphData</code> on
+                            <code>device</code>.
+                        </p>
+                    </div>
+
+                    <!-- Item 6 -->
+                    <div class="card api-item">
+                        <div class="card-title">
+                            <code>compute_spatial_adj_norm(dist_edge_index, num_nodes, device='cpu')</code>
+                            <span class="badge badge-cyan">Lines 180-186</span>
+                        </div>
+                        <p style="color:var(--text-secondary); font-size:0.86rem;">
+                            Constructs dense row-normalized spatial adjacency matrix with self-loops $A_{\text{norm}} =
+                            D^{-1}(A + I)$ for Potts MRF smoothing.
+                        </p>
+                    </div>
+
+                    <!-- Item 7 -->
+                    <div class="card api-item">
+                        <div class="card-title">
+                            <code>class GatedAttentionFusion(nn.Module)</code>
+                            <span class="badge badge-purple">Lines 188-210</span>
+                        </div>
+                        <p style="color:var(--text-secondary); font-size:0.86rem;">
+                            Learns per-spot feature-wise gating vector $g = \sigma(W_g [z_1 \parallel z_2] + b_g)$ and
+                            outputs $W_{\text{proj}}(g \odot z_1 + (1 - g) \odot z_2) + b_{\text{proj}}$.
+                        </p>
+                    </div>
+
+                    <!-- Item 8 -->
+                    <div class="card api-item">
+                        <div class="card-title">
+                            <code>class SpatialPottsDEC(nn.Module)</code>
+                            <span class="badge badge-purple">Lines 211-254</span>
+                        </div>
+                        <p style="color:var(--text-secondary); font-size:0.86rem;">
+                            Maintains learnable cluster centers $\mu \in \mathbb{R}^{K \times 64}$. Calculates Student-t
+                            soft assignments $Q$, applies DEC sharpening, modulates by spatial neighborhood consensus
+                            $A_{\text{norm}} Q$, and calculates KL divergence.
+                        </p>
+                    </div>
+
+                    <!-- Item 9 -->
+                    <div class="card api-item">
+                        <div class="card-title">
+                            <code>class DualGCN_Gated(nn.Module)</code>
+                            <span class="badge badge-purple">Lines 256-304</span>
+                        </div>
+                        <p style="color:var(--text-secondary); font-size:0.86rem;">
+                            Contains dual RNA GCN branches, auxiliary GCN branch, two-tier gated fusion, and decoupled
+                            decoders (<code>reconstruct_joint</code>, <code>reconstruct_rna</code>,
+                            <code>reconstruct_aux</code>).
+                        </p>
+                    </div>
+
+                    <!-- Item 10 -->
+                    <div class="card api-item">
+                        <div class="card-title">
+                            <code>class ASTRA_v1_DEC_Gated(nn.Module)</code>
+                            <span class="badge badge-purple">Lines 305-378</span>
+                        </div>
+                        <p style="color:var(--text-secondary); font-size:0.86rem;">
+                            Top-level container combining <code>DualGCN_Gated</code> and <code>SpatialPottsDEC</code>.
+                            Implements spatial contrastive regularization loss and multi-stage loss aggregation.
+                        </p>
+                    </div>
+
+                    <!-- Item 11 -->
+                    <div class="card api-item">
+                        <div class="card-title">
+                            <code>train_model_dec(...)</code>
+                            <span class="badge badge-emerald">Lines 422-638</span>
+                        </div>
+                        <p style="color:var(--text-secondary); font-size:0.86rem;">
+                            Master 400-epoch training loop: executes Stage 1 pretraining (250 ep, lr=1e-3), restores
+                            peak Stage-1 model weights, initializes DEC prototypes via KMeans, and runs Stage 2
+                            fine-tuning (150 ep, lr=1e-4).
+                        </p>
+                    </div>
+
+                    <!-- Item 12 -->
+                    <div class="card api-item">
+                        <div class="card-title">
+                            <code>plot_all_visualizations(...)</code>
+                            <span class="badge badge-amber">Lines 741-816</span>
+                        </div>
+                        <p style="color:var(--text-secondary); font-size:0.86rem;">
+                            Renders and exports curves, spatial domain scatter plots, UMAP representations, and
+                            silhouette/latent dimension violin plots.
+                        </p>
+                    </div>
+
+                    <!-- Item 13 -->
+                    <div class="card api-item">
+                        <div class="card-title">
+                            <code>run_experiment(...) & __main__ CLI</code>
+                            <span class="badge badge-emerald">Lines 821-930</span>
+                        </div>
+                        <p style="color:var(--text-secondary); font-size:0.86rem;">
+                            Iterates across 6 benchmark datasets and 3 random seeds (42, 1234, 2024), orchestrating data
+                            downloads, training, plotting, and saving summary CSV metrics.
+                        </p>
+                    </div>
+                </div>
+            </section>
+
+        </div>
+    </main>
+
+    <!-- JAVASCRIPT LOGIC -->
+    <script>
+        // Initialize Lucide Icons
+        lucide.createIcons();
+
+        // Initialize Mermaid with dark theme
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'dark',
+            securityLevel: 'loose',
+            fontFamily: 'Inter, sans-serif'
+        });
+
+        // Theme Toggle Function
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-theme');
+            const target = current === 'light' ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', target);
+            localStorage.setItem('theme_preference', target);
+
+            const themeIcon = document.getElementById('theme-icon');
+            const mobileThemeIcon = document.getElementById('mobile-theme-icon');
+            const themeText = document.getElementById('theme-text');
+
+            if (target === 'light') {
+                if (themeIcon) themeIcon.setAttribute('data-lucide', 'moon');
+                if (mobileThemeIcon) mobileThemeIcon.setAttribute('data-lucide', 'moon');
+                if (themeText) themeText.textContent = 'Dark Mode';
+            } else {
+                if (themeIcon) themeIcon.setAttribute('data-lucide', 'sun');
+                if (mobileThemeIcon) mobileThemeIcon.setAttribute('data-lucide', 'sun');
+                if (themeText) themeText.textContent = 'Light Mode';
+            }
+            lucide.createIcons();
+        }
+
+        // Toggle Desktop Sidebar (Collapsible)
+        function toggleDesktopSidebar() {
+            const isCollapsed = document.body.classList.toggle('sidebar-collapsed');
+            localStorage.setItem('sidebar_collapsed', isCollapsed ? 'true' : 'false');
+            setTimeout(() => {
+                window.dispatchEvent(new Event('resize'));
+                lucide.createIcons();
+            }, 300);
+        }
+
+        // Toggle Mobile Sidebar Drawer
+        function toggleSidebar() {
+            const isOpen = document.body.classList.toggle('mobile-nav-open');
+            const sb = document.getElementById('sidebar');
+            sb.classList.toggle('open', isOpen);
+        }
+
+        function closeMobileSidebar() {
+            document.body.classList.remove('mobile-nav-open');
+            const sb = document.getElementById('sidebar');
+            sb.classList.remove('open');
+        }
+
+        // Close Mobile Drawer upon clicking any Nav Item
+        document.querySelectorAll('.nav-item').forEach(link => {
+            link.addEventListener('click', () => {
+                if (window.innerWidth <= 1024) {
+                    closeMobileSidebar();
+                }
+            });
+        });
+
+        // Tab Switching Function
+        function switchTab(evt, tabId) {
+            const container = evt.currentTarget.closest('.tab-container');
+            container.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            container.querySelectorAll('.tab-pane').forEach(pane => pane.classList.remove('active'));
+            evt.currentTarget.classList.add('active');
+            const targetPane = document.getElementById(tabId);
+            if (targetPane) targetPane.classList.add('active');
+            if (window.renderMathInElement) {
+                renderMathInElement(targetPane, { delimiters: [{ left: '$$', right: '$$', display: true }, { left: '$', right: '$', display: false }] });
+            }
+        }
+
+        // Copy Code / Math helpers
+        function copyCode(btn) {
+            const code = btn.nextElementSibling.innerText;
+            navigator.clipboard.writeText(code).then(() => {
+                btn.innerHTML = '<i data-lucide="check"></i> Copied!';
+                lucide.createIcons();
+                setTimeout(() => {
+                    btn.innerHTML = '<i data-lucide="copy"></i> Copy';
+                    lucide.createIcons();
+                }, 2000);
+            });
+        }
+
+        function copyMath(btn) {
+            const math = btn.parentElement.innerText.replace('Copy', '').trim();
+            navigator.clipboard.writeText(math).then(() => {
+                btn.innerHTML = '<i data-lucide="check"></i> Copied!';
+                lucide.createIcons();
+                setTimeout(() => {
+                    btn.innerHTML = '<i data-lucide="copy"></i> Copy';
+                    lucide.createIcons();
+                }, 2000);
+            });
+        }
+
+        // API Search & Filter
+        function filterApiList() {
+            const input = document.getElementById('api-search').value.toLowerCase();
+            const items = document.querySelectorAll('.api-item');
+            items.forEach(item => {
+                const text = item.innerText.toLowerCase();
+                item.style.display = text.includes(input) ? 'block' : 'none';
+            });
+        }
+
+        // ScrollSpy
+        window.addEventListener('scroll', () => {
+            const sections = document.querySelectorAll('section');
+            const navLinks = document.querySelectorAll('.nav-item');
+            let current = '';
+            sections.forEach(section => {
+                if (pageYOffset >= section.offsetTop - 120) {
+                    current = section.getAttribute('id');
+                }
+            });
+            navLinks.forEach(link => {
+                link.classList.remove('active');
+                if (link.getAttribute('href') === '#' + current) {
+                    link.classList.add('active');
+                }
+            });
+        });
+
+        // ========================================================
+        // INTERACTIVE LAB 1: Gated Attention Simulator Logic
+        // ========================================================
+        function updateGateSim() {
+            const z1 = parseFloat(document.getElementById('slider-z1').value);
+            const z2 = parseFloat(document.getElementById('slider-z2').value);
+            const wg = parseFloat(document.getElementById('slider-wg').value);
+            const bg = parseFloat(document.getElementById('slider-bg').value);
+
+            document.getElementById('val-z1').textContent = z1.toFixed(2);
+            document.getElementById('val-z2').textContent = z2.toFixed(2);
+            document.getElementById('val-wg').textContent = wg.toFixed(2);
+            document.getElementById('val-bg').textContent = bg.toFixed(2);
+
+            const logit = (wg * (z1 - z2)) + bg;
+            const g = 1.0 / (1.0 + Math.exp(-logit));
+            const zFused = (g * z1) + ((1.0 - g) * z2);
+
+            const pctSim = Math.round(g * 100);
+            const pctDist = 100 - pctSim;
+
+            document.getElementById('text-pct-sim').textContent = pctSim + '%';
+            document.getElementById('text-pct-dist').textContent = pctDist + '%';
+            document.getElementById('gauge-sim').style.width = pctSim + '%';
+            document.getElementById('gauge-sim').textContent = 'Sim: ' + g.toFixed(2);
+            document.getElementById('gauge-dist').style.width = pctDist + '%';
+            document.getElementById('gauge-dist').textContent = 'Dist: ' + (1.0 - g).toFixed(2);
+
+            document.getElementById('math-logit').textContent = logit.toFixed(2);
+            document.getElementById('math-gate-val').textContent = g.toFixed(4);
+            document.getElementById('math-g-val').textContent = g.toFixed(2);
+            document.getElementById('math-1g-val').textContent = (1.0 - g).toFixed(2);
+            document.getElementById('math-zfused').textContent = zFused.toFixed(2);
+        }
+
+        // ========================================================
+        // INTERACTIVE LAB 2: 5x5 Spatial Potts MRF Simulator
+        // ========================================================
+        const spotClusters = [
+            1, 1, 1, 2, 2,
+            1, 1, 1, 2, 2,
+            1, 1, 2, 2, 2,  // Spot at index 12 (row 2, col 2) is the outlier!
+            3, 3, 3, 2, 2,
+            3, 3, 3, 3, 2
+        ];
+
+        function initPottsGrid() {
+            const grid = document.getElementById('tissue-grid');
+            grid.innerHTML = '';
+            for (let i = 0; i < 25; i++) {
+                const cell = document.createElement('div');
+                cell.className = `spot-cell cluster-${spotClusters[i]}`;
+                cell.id = `spot-${i}`;
+                cell.textContent = `C${spotClusters[i]}`;
+                if (i === 12) {
+                    cell.classList.add('selected');
+                }
+                cell.onclick = () => selectSpot(i);
+                grid.appendChild(cell);
+            }
+            updatePottsGrid();
+        }
+
+        let selectedSpotIdx = 12;
+        function selectSpot(idx) {
+            document.querySelectorAll('.spot-cell').forEach(c => c.classList.remove('selected'));
+            document.getElementById(`spot-${idx}`).classList.add('selected');
+            selectedSpotIdx = idx;
+            updatePottsGrid();
+        }
+
+        function updatePottsGrid() {
+            const lambdaVal = parseFloat(document.getElementById('slider-lambda').value);
+            const alphaVal = parseFloat(document.getElementById('slider-alpha').value);
+            document.getElementById('val-lambda').textContent = lambdaVal.toFixed(2);
+            document.getElementById('val-alpha').textContent = alphaVal.toFixed(2);
+
+            // Analyze neighborhood of selected spot
+            const r = Math.floor(selectedSpotIdx / 5);
+            const c = selectedSpotIdx % 5;
+            let countC1 = 0, countC2 = 0, countC3 = 0, totalNeighbors = 0;
+
+            for (let dr = -1; dr <= 1; dr++) {
+                for (let dc = -1; dc <= 1; dc++) {
+                    const nr = r + dr, nc = c + dc;
+                    if (nr >= 0 && nr < 5 && nc >= 0 && nc < 5) {
+                        const nIdx = nr * 5 + nc;
+                        const cl = spotClusters[nIdx];
+                        if (cl === 1) countC1++;
+                        if (cl === 2) countC2++;
+                        if (cl === 3) countC3++;
+                        totalNeighbors++;
+                    }
+                }
+            }
+
+            // Simulated soft assignment Q for the selected spot
+            let q1 = 0.15, q2 = 0.80, q3 = 0.05;
+            if (selectedSpotIdx !== 12) {
+                const baseCl = spotClusters[selectedSpotIdx];
+                if (baseCl === 1) { q1 = 0.85; q2 = 0.10; q3 = 0.05; }
+                else if (baseCl === 2) { q1 = 0.10; q2 = 0.85; q3 = 0.05; }
+                else { q1 = 0.05; q2 = 0.10; q3 = 0.85; }
+            }
+
+            // DEC Sharpening
+            let pDec1 = Math.pow(q1, 2);
+            let pDec2 = Math.pow(q2, 2);
+            let pDec3 = Math.pow(q3, 2);
+            const pDecSum = pDec1 + pDec2 + pDec3;
+            pDec1 /= pDecSum; pDec2 /= pDecSum; pDec3 /= pDecSum;
+
+            // Potts consensus: Consensus = A_norm * Q
+            const cons1 = countC1 / totalNeighbors;
+            const cons2 = countC2 / totalNeighbors;
+            const cons3 = countC3 / totalNeighbors;
+
+            // Potts modulated target
+            let pFin1 = pDec1 * Math.exp(lambdaVal * cons1 * 10);
+            let pFin2 = pDec2 * Math.exp(lambdaVal * cons2 * 10);
+            let pFin3 = pDec3 * Math.exp(lambdaVal * cons3 * 10);
+            const pFinSum = pFin1 + pFin2 + pFin3;
+            pFin1 /= pFinSum; pFin2 /= pFinSum; pFin3 /= pFinSum;
+
+            document.getElementById('pdec-c1').textContent = pDec1.toFixed(2);
+            document.getElementById('pdec-c2').textContent = pDec2.toFixed(2);
+            document.getElementById('pdec-c3').textContent = pDec3.toFixed(2);
+
+            document.getElementById('pfinal-c1').textContent = pFin1.toFixed(2);
+            document.getElementById('pfinal-c2').textContent = pFin2.toFixed(2);
+            document.getElementById('pfinal-c3').textContent = pFin3.toFixed(2);
+
+            // Update spot visual if lambda is high enough to correct outlier
+            const centerCell = document.getElementById('spot-12');
+            if (centerCell && selectedSpotIdx === 12) {
+                if (pFin1 > pFin2) {
+                    centerCell.className = 'spot-cell cluster-1 selected';
+                    centerCell.textContent = 'C1 (Corr)';
+                } else {
+                    centerCell.className = 'spot-cell cluster-2 selected';
+                    centerCell.textContent = 'C2 (Noise)';
+                }
+            }
+        }
+
+        // ========================================================
+        // INTERACTIVE LAB 3: Two-Stage Optimization Logic
+        // ========================================================
+        let currentStage = 1;
+        function setTrainingStage(stage) {
+            currentStage = stage;
+            const b1 = document.getElementById('btn-stage1');
+            const b2 = document.getElementById('btn-stage2');
+            if (stage === 1) {
+                b1.classList.add('active');
+                b1.style.borderColor = 'var(--accent-cyan)';
+                b2.classList.remove('active');
+                b2.style.borderColor = 'var(--border-color)';
+                document.getElementById('stage-beta').textContent = '25.0';
+                document.getElementById('stage-dec').textContent = '0.0 (Inactive)';
+                document.getElementById('stage-dec').style.color = 'var(--text-muted)';
+                document.getElementById('stage-lr').textContent = '1e-3 (Adam)';
+                document.getElementById('stage-p-interval').textContent = 'N/A';
+            } else {
+                b2.classList.add('active');
+                b2.style.borderColor = 'var(--accent-cyan)';
+                b1.classList.remove('active');
+                b1.style.borderColor = 'var(--border-color)';
+                document.getElementById('stage-beta').textContent = '5.0 (Cut by 80%)';
+                document.getElementById('stage-dec').textContent = '1.0 (Active)';
+                document.getElementById('stage-dec').style.color = 'var(--accent-emerald)';
+                document.getElementById('stage-lr').textContent = '1e-4 (10x smaller)';
+                document.getElementById('stage-p-interval').textContent = 'Every 5 epochs';
+            }
+            calcTotalLoss();
+        }
+
+        function calcTotalLoss() {
+            const lRec = parseFloat(document.getElementById('slider-lrec').value);
+            const lSpat = parseFloat(document.getElementById('slider-lspat').value);
+            const lKl = parseFloat(document.getElementById('slider-lkl').value);
+
+            document.getElementById('live-rec-val').textContent = lRec.toFixed(3);
+            document.getElementById('live-spat-val').textContent = lSpat.toFixed(3);
+            document.getElementById('live-kl-val').textContent = lKl.toFixed(3);
+
+            const beta = currentStage === 1 ? 25.0 : 5.0;
+            const gamma = 10.0;
+            const reg = 0.001;
+            const decWeight = currentStage === 1 ? 0.0 : 1.0;
+
+            const total = (beta * lRec) + (gamma * lSpat) + reg + (decWeight * lKl);
+            document.getElementById('live-total-loss').textContent = total.toFixed(4);
+        }
+
+        // ========================================================
+        // INTERACTIVE LAB 4: Benchmark Dataset Explorer
+        // ========================================================
+        const datasetInfo = [
+            {
+                name: "10x_human_lymph_node_A1",
+                badge: "CITE-seq ADT",
+                mod1: "Spatial RNA (3000 HVGs)",
+                mod2: "CITE-seq Antibody (ADT)",
+                mod2Prep: "Seurat Spot CLR + Scale",
+                gt: "annotation.csv ('manual-anno')",
+                clusters: "~9 Expert Anatomical Domains",
+                bio: "Human Lymph Node Section A1 (Germinal Centers, Mantle Zones, T-Cell Interfollicular Cortex)",
+                url: "https://drive.google.com/drive/folders/10z1N4MwW8Y49o8GlkYGBKVx1N7fiMuyC"
+            },
+            {
+                name: "10x_human_lymph_node_D1",
+                badge: "CITE-seq ADT",
+                mod1: "Spatial RNA (3000 HVGs)",
+                mod2: "CITE-seq Antibody (ADT)",
+                mod2Prep: "Seurat Spot CLR + Scale",
+                gt: "annotation.csv ('manual-anno')",
+                clusters: "~9 Histological Regions",
+                bio: "Human Lymph Node Section D1 (Replicate sample validating cross-slide spatial reproducibility)",
+                url: "https://drive.google.com/drive/folders/1-g_Ca2XMaMXF-MisuVY-wobWDX86O6zz"
+            },
+            {
+                name: "Mouse_Brain_E11_S1",
+                badge: "Spatial ATAC",
+                mod1: "Spatial RNA (3000 HVGs)",
+                mod2: "Chromatin Accessibility (ATAC)",
+                mod2Prep: "Peak TF-IDF + Norm (10k) + PCA 50",
+                gt: "anno.csv ('cluster')",
+                clusters: "~12 Brain Developmental Regions",
+                bio: "Embryonic Mouse Brain E11.5 Section 1 (Early Neurogenesis, Ventricular Zones, Forebrain/Midbrain)",
+                url: "https://drive.google.com/drive/folders/1zRwDJrYnks0LRzlAVRqPU7jE_OcStgPo"
+            },
+            {
+                name: "Mouse_Brain_E13_S1",
+                badge: "Spatial ATAC",
+                mod1: "Spatial RNA (3000 HVGs)",
+                mod2: "Chromatin Accessibility (ATAC)",
+                mod2Prep: "Peak TF-IDF + Norm (10k) + PCA 50",
+                gt: "anno.csv ('cluster')",
+                clusters: "~14 Cortical & Subcortical Layers",
+                bio: "Embryonic Mouse Brain E13.5 Section 1 (Developing Neocortex, Striatum, Thalamus Formation)",
+                url: "https://drive.google.com/drive/folders/1GOufwIRjjfcd9Bi2GKtebzKoPCg2jVud"
+            },
+            {
+                name: "Mouse_Brain_E15_S1",
+                badge: "Spatial ATAC",
+                mod1: "Spatial RNA (3000 HVGs)",
+                mod2: "Chromatin Accessibility (ATAC)",
+                mod2Prep: "Peak TF-IDF + Norm (10k) + PCA 50",
+                gt: "anno.csv ('cluster')",
+                clusters: "~16 Structural Microenvironments",
+                bio: "Embryonic Mouse Brain E15.5 Section 1 (Cortical Plate Lamination, Hippocampal Primordium)",
+                url: "https://drive.google.com/drive/folders/1rHkTL5OF5qPsEERypRGMS51SjUQ69tdD"
+            },
+            {
+                name: "Mouse_Brain_E18_S1",
+                badge: "Spatial ATAC",
+                mod1: "Spatial RNA (3000 HVGs)",
+                mod2: "Chromatin Accessibility (ATAC)",
+                mod2Prep: "Peak TF-IDF + Norm (10k) + PCA 50",
+                gt: "anno.csv ('cluster')",
+                clusters: "~18 Mature Embryonic Structures",
+                bio: "Embryonic Mouse Brain E18.5 Section 1 (Fully Stratified Cortex, Cerebellum, Brainstem)",
+                url: "https://drive.google.com/drive/folders/1Xj1LNIAY93biS6JIMKNRODn5GvtCKADB"
+            }
+        ];
+
+        function selectDataset(idx) {
+            document.querySelectorAll('.ds-pill').forEach((p, i) => {
+                p.classList.toggle('active', i === idx);
+            });
+            const d = datasetInfo[idx];
+            document.getElementById('ds-name').textContent = d.name;
+            document.getElementById('ds-modality-badge').textContent = d.badge;
+            document.getElementById('ds-modality-badge').className = `badge ${d.badge.includes('ADT') ? 'badge-cyan' : 'badge-purple'}`;
+            document.getElementById('ds-mod1').textContent = d.mod1;
+            document.getElementById('ds-mod2').textContent = d.mod2;
+            document.getElementById('ds-mod2-prep').textContent = d.mod2Prep;
+            document.getElementById('ds-gt').textContent = d.gt;
+            document.getElementById('ds-clusters').textContent = d.clusters;
+            document.getElementById('ds-bio').textContent = d.bio;
+            document.getElementById('ds-url').href = d.url;
+        }
+
+        // Auto-initialize on load
+        window.addEventListener('load', () => {
+            // Check saved sidebar state
+            if (localStorage.getItem('sidebar_collapsed') === 'true') {
+                document.body.classList.add('sidebar-collapsed');
+            }
+
+            // Check saved theme
+            const savedTheme = localStorage.getItem('theme_preference');
+            if (savedTheme) {
+                document.documentElement.setAttribute('data-theme', savedTheme);
+                const themeIcon = document.getElementById('theme-icon');
+                const mobileThemeIcon = document.getElementById('mobile-theme-icon');
+                const themeText = document.getElementById('theme-text');
+                if (savedTheme === 'light') {
+                    if (themeIcon) themeIcon.setAttribute('data-lucide', 'moon');
+                    if (mobileThemeIcon) mobileThemeIcon.setAttribute('data-lucide', 'moon');
+                    if (themeText) themeText.textContent = 'Dark Mode';
+                }
+                lucide.createIcons();
+            }
+
+            initPottsGrid();
+            updateGateSim();
+            calcTotalLoss();
+            if (window.renderMathInElement) {
+                renderMathInElement(document.body, {
+                    delimiters: [
+                        { left: '$$', right: '$$', display: true },
+                        { left: '$', right: '$', display: false },
+                        { left: '\\(', right: '\\)', display: false },
+                        { left: '\\[', right: '\\]', display: true }
+                    ],
+                    throwOnError: false
+                });
+            }
+
+            // Initialize SVG Pan & Zoom for Mermaid Diagrams[cite: 1]
+            setTimeout(() => {
+                document.querySelectorAll('.mermaid svg').forEach((svg, index) => {
+                    // 1. Ensure the SVG has a unique ID required by the library[cite: 1]
+                    if (!svg.getAttribute('id')) {
+                        svg.setAttribute('id', 'mermaid-svg-zoom-' + index);
+                    }
+
+                    // 2. Override Mermaid's default inline styles to fill the panning container[cite: 1]
+                    svg.style.width = '100%';
+                    svg.style.height = '100%';
+                    svg.style.maxWidth = 'none';
+
+                    // 3. Attach the zoom library[cite: 1]
+                    svgPanZoom(svg, {
+                        zoomEnabled: true,
+                        controlIconsEnabled: true, // Shows UI buttons (+ / - / Reset)[cite: 1]
+                        fit: true,
+                        center: true,
+                        minZoom: 0.5,
+                        maxZoom: 10,
+                        zoomScaleSensitivity: 0.3
+                    });
+                });
+            }, 1500); // 1.5s delay guarantees Mermaid completes its asynchronous rendering[cite: 1]
+        });
+    </script>
+</body>
+
+</html>
