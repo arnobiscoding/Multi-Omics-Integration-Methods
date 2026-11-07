@@ -20,6 +20,7 @@ and matches the architecture and benchmark tracking suite in spallmpipeline.py:
 
 import os
 import sys
+import gc
 import random
 import json
 import time
@@ -419,6 +420,10 @@ def run_mclust(data_matrix, n_clusters, seed=2024, max_dims=30):
         robjects.globalenv['tmp_mclust_mat'] = numpy2ri.numpy2rpy(data_mat)
         res = robjects.r(f'run_mclust_native(tmp_mclust_mat, {n_clusters}, {seed})')
         labels = np.array(res).astype(int)
+        try:
+            robjects.r('rm(tmp_mclust_mat); gc(verbose=FALSE)')
+        except Exception:
+            pass
         return labels.astype(str)
     except Exception as e:
         print(f"[mclust Info] Native R mclust execution skipped/fallback ({e}). Running KMeans...")
@@ -556,6 +561,7 @@ def plot_totalvi_visualizations(adata, title_prefix="", dname="dataset", seed=20
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"Saved visualization plot image to: {save_path}")
     plt.close(fig)
+    plt.close('all')
 
 
 def plot_totalvi_summary_boxplots(df_all, save_dir=None):
@@ -595,6 +601,7 @@ def plot_totalvi_summary_boxplots(df_all, save_dir=None):
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"Saved {metric} Boxplot image to: {save_path}")
         plt.close(fig)
+        plt.close('all')
 
 
 def export_spot_predictions_csv(adata, dataset_name, seed=0, out_dir="results"):
@@ -758,6 +765,7 @@ def compute_and_plot_cross_seed_linearity(df_results=None, out_dir="results", vi
     if v_dir != out_dir:
         plt.savefig(os.path.join(out_dir, "totalvi_cross_seed_linearity.png"), dpi=300, bbox_inches='tight')
     plt.close(fig)
+    plt.close('all')
     return df_diag
 
 
@@ -830,6 +838,7 @@ def plot_totalvi_spatial_domains_and_attention(loaded_adatas=None, df_results=No
     if v_dir != out_dir:
         plt.savefig(os.path.join(out_dir, "totalvi_spatial_domain_and_attention_maps.png"), dpi=300, bbox_inches='tight')
     plt.close(fig)
+    plt.close('all')
 
 
 def plot_totalvi_latent_umap_manifolds(loaded_adatas=None, df_results=None, save_dir=None, visuals_dir=None, show_plot=False):
@@ -904,6 +913,7 @@ def plot_totalvi_latent_umap_manifolds(loaded_adatas=None, df_results=None, save
     if v_dir != out_dir:
         plt.savefig(os.path.join(out_dir, "totalvi_latent_umap_manifolds.png"), dpi=300, bbox_inches='tight')
     plt.close(fig)
+    plt.close('all')
 
 
 def plot_loss(loss_history, save_path=None):
@@ -920,6 +930,7 @@ def plot_loss(loss_history, save_path=None):
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
+    plt.close('all')
 
 
 # ==============================================================================
@@ -1029,46 +1040,73 @@ def run_totalvi_workflow(
     print("RNA shape:", adata_rna.shape)
     print("Modality 2 shape:", adata_mod2.shape)
 
-    # Convert sparse to dense if necessary, ensuring integer counts for totalVI
-    if issparse(adata_rna.X):
-        adata_rna.X = adata_rna.X.toarray()
+    # 1. Clean Modality 2 (ATAC/ADT) while sparse to avoid memory spikes
     if issparse(adata_mod2.X):
-        adata_mod2.X = adata_mod2.X.toarray()
+        if (adata_mod2.X.data < 0).any():
+            adata_mod2.X.data = np.clip(adata_mod2.X.data, 0, None)
+        if not np.issubdtype(adata_mod2.X.dtype, np.integer):
+            adata_mod2.X.data = np.round(adata_mod2.X.data).astype(np.float32)
+    else:
+        if np.any(adata_mod2.X < 0):
+            adata_mod2.X = np.clip(adata_mod2.X, a_min=0, a_max=None)
+        if not np.issubdtype(adata_mod2.X.dtype, np.integer):
+            adata_mod2.X = np.round(adata_mod2.X).astype(np.float32)
 
-    # Ensure non-negative integers for count likelihoods
-    if np.any(adata_rna.X < 0):
-        adata_rna.X = np.clip(adata_rna.X, a_min=0, a_max=None)
-    if np.any(adata_mod2.X < 0):
-        adata_mod2.X = np.clip(adata_mod2.X, a_min=0, a_max=None)
-
-    # Ensure integer counts if floats are present
-    if not np.issubdtype(adata_rna.X.dtype, np.integer):
-        adata_rna.X = np.round(adata_rna.X).astype(np.float32)
-    if not np.issubdtype(adata_mod2.X.dtype, np.integer):
-        adata_mod2.X = np.round(adata_mod2.X).astype(np.float32)
-
-    adata_rna.obs['batch'] = 'batch_0'
-    adata_rna.layers['counts'] = adata_rna.X.copy()
-
-    # Subsetting Modality 2 (ATAC) to top 4,000 most informative features for efficiency & convergence
+    # Subsetting Modality 2 to top 4,000 most informative features while sparse (avoids OOM on 117k features)
     if adata_mod2.n_vars > 4000:
-        print(f"Subsetting Modality 2 (ATAC) from {adata_mod2.n_vars} to top 4,000 most informative features...")
-        try:
-            adata_mod2.layers['counts'] = adata_mod2.X.copy()
-            sc.pp.highly_variable_genes(
-                adata_mod2,
-                n_top_genes=4000,
-                flavor="seurat_v3",
-                layer="counts"
-            )
-            adata_mod2_subset = adata_mod2[:, adata_mod2.var["highly_variable"]].copy()
-        except Exception:
+        print(f"Subsetting Modality 2 from {adata_mod2.n_vars} to top 4,000 most informative features...")
+        if issparse(adata_mod2.X):
+            mean = np.array(adata_mod2.X.mean(axis=0)).flatten()
+            mean_sq = np.array(adata_mod2.X.power(2).mean(axis=0)).flatten()
+            variances = mean_sq - mean**2
+        else:
             variances = np.var(adata_mod2.X, axis=0)
-            top_4000_idx = np.argsort(variances)[::-1][:4000]
-            adata_mod2_subset = adata_mod2[:, top_4000_idx].copy()
+        top_4000_idx = np.argsort(variances)[::-1][:4000]
+        adata_mod2_subset = adata_mod2[:, top_4000_idx].copy()
         print(f"Modality 2 subsetted shape: {adata_mod2_subset.shape}")
     else:
         adata_mod2_subset = adata_mod2.copy()
+
+    # Free original full Modality 2 immediately to reclaim memory
+    del adata_mod2
+    gc.collect()
+
+    # Convert subsetted Modality 2 to dense non-negative float32 array for totalVI protein layer
+    if issparse(adata_mod2_subset.X):
+        adata_mod2_subset.X = adata_mod2_subset.X.toarray()
+    adata_mod2_subset.X = np.clip(np.round(adata_mod2_subset.X), 0, None).astype(np.float32)
+
+    # 2. Clean RNA and subset to top 4,000 highly variable features
+    adata_rna.obs['batch'] = 'batch_0'
+    if issparse(adata_rna.X):
+        if (adata_rna.X.data < 0).any():
+            adata_rna.X.data = np.clip(adata_rna.X.data, 0, None)
+        if not np.issubdtype(adata_rna.X.dtype, np.integer):
+            adata_rna.X.data = np.round(adata_rna.X.data).astype(np.float32)
+    else:
+        if np.any(adata_rna.X < 0):
+            adata_rna.X = np.clip(adata_rna.X, a_min=0, a_max=None)
+        if not np.issubdtype(adata_rna.X.dtype, np.integer):
+            adata_rna.X = np.round(adata_rna.X).astype(np.float32)
+
+    if adata_rna.n_vars > 4000:
+        print(f"Subsetting RNA from {adata_rna.n_vars} to top 4,000 highly variable features...")
+        if issparse(adata_rna.X):
+            mean_rna = np.array(adata_rna.X.mean(axis=0)).flatten()
+            mean_sq_rna = np.array(adata_rna.X.power(2).mean(axis=0)).flatten()
+            variances_rna = mean_sq_rna - mean_rna**2
+        else:
+            variances_rna = np.var(adata_rna.X, axis=0)
+        top_rna_idx = np.argsort(variances_rna)[::-1][:4000]
+        adata_rna_subset = adata_rna[:, top_rna_idx].copy()
+    else:
+        adata_rna_subset = adata_rna.copy()
+
+    if issparse(adata_rna_subset.X):
+        adata_rna_subset.X = adata_rna_subset.X.toarray()
+    adata_rna_subset.X = np.clip(np.round(adata_rna_subset.X), 0, None).astype(np.float32)
+    adata_rna_subset.obs['batch'] = 'batch_0'
+    adata_rna_subset.layers['counts'] = adata_rna_subset.X.copy()
 
     # Execute totalVI Model Training
     loss_history = []
@@ -1079,17 +1117,7 @@ def run_totalvi_workflow(
         try:
             if HAVE_MUDATA:
                 print("Setting up MuData object for totalVI...")
-                mdata = md.MuData({"rna": adata_rna, "protein": adata_mod2_subset})
-                sc.pp.highly_variable_genes(
-                    mdata.mod["rna"],
-                    n_top_genes=min(4000, adata_rna.n_vars),
-                    flavor="seurat_v3",
-                    batch_key="batch",
-                    layer="counts"
-                )
-                mdata.mod["rna_subset"] = mdata.mod["rna"][
-                    :, mdata.mod["rna"].var["highly_variable"]
-                ].copy()
+                mdata = md.MuData({"rna_subset": adata_rna_subset, "protein": adata_mod2_subset})
                 mdata.update()
 
                 scvi.model.TOTALVI.setup_mudata(
@@ -1106,23 +1134,15 @@ def run_totalvi_workflow(
                 vae = scvi.model.TOTALVI(mdata, n_latent=64)
             else:
                 print("MuData not detected, using AnnData direct setup for totalVI...")
-                adata_combined = adata_rna.copy()
+                adata_combined = adata_rna_subset.copy()
                 adata_combined.obsm["protein_expression"] = adata_mod2_subset.X
-                sc.pp.highly_variable_genes(
-                    adata_combined,
-                    n_top_genes=min(4000, adata_combined.n_vars),
-                    flavor="seurat_v3",
-                    batch_key="batch",
-                    layer="counts"
-                )
-                adata_subset = adata_combined[:, adata_combined.var["highly_variable"]].copy()
                 scvi.model.TOTALVI.setup_anndata(
-                    adata_subset,
+                    adata_combined,
                     protein_expression_obsm_key="protein_expression",
                     layer="counts",
                     batch_key="batch"
                 )
-                vae = scvi.model.TOTALVI(adata_subset, n_latent=64)
+                vae = scvi.model.TOTALVI(adata_combined, n_latent=64)
 
             use_gpu = torch.cuda.is_available() and device.type == 'cuda'
             accelerator = "gpu" if use_gpu else "cpu"
@@ -1154,15 +1174,34 @@ def run_totalvi_workflow(
         except Exception as e:
             print(f"Warning: scvi totalVI execution encountered an issue ({e}). Running PCA fallback...")
             pass
+        finally:
+            if 'vae' in locals():
+                del vae
+            if 'mdata' in locals():
+                del mdata
+            if 'adata_combined' in locals():
+                del adata_combined
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     if latent_emb is None:
         print("[Notice] Using standard concatenated PCA fallback representation for dry-run/testing...")
-        pca_rna = PCA(n_components=min(32, adata_rna.n_obs - 1, adata_rna.n_vars - 1)).fit_transform(adata_rna.X)
-        pca_mod2 = PCA(n_components=min(32, adata_mod2.n_obs - 1, adata_mod2.n_vars - 1)).fit_transform(adata_mod2.X)
+        rna_mat = adata_rna_subset.X.toarray() if issparse(adata_rna_subset.X) else adata_rna_subset.X
+        mod2_mat = adata_mod2_subset.X.toarray() if issparse(adata_mod2_subset.X) else adata_mod2_subset.X
+        pca_rna = PCA(n_components=min(32, rna_mat.shape[0] - 1, rna_mat.shape[1] - 1)).fit_transform(rna_mat)
+        pca_mod2 = PCA(n_components=min(32, mod2_mat.shape[0] - 1, mod2_mat.shape[1] - 1)).fit_transform(mod2_mat)
         latent_emb = np.concatenate([pca_rna, pca_mod2], axis=1)
         loss_history = [float(100.0 / (i + 1)) for i in range(epochs)]
 
+    # Free temporary subsetted objects
+    del adata_rna_subset, adata_mod2_subset
+    gc.collect()
+
     adata = adata_rna.copy()
+    del adata_rna
+    if 'counts' in adata.layers:
+        del adata.layers['counts']
     adata.obsm['X_totalVI'] = latent_emb
     adata.obsm['feat'] = latent_emb
     adata.obsm['totalVI'] = latent_emb
@@ -1394,12 +1433,20 @@ def main(
                     mclust_row = next((r for r in results_list if r.get('cluster alg') == 'mclust'), None)
                     current_ari = mclust_row['ARI'] if mclust_row else (results_list[0]['ARI'] if results_list else 0.0)
                     if dname not in best_adatas or current_ari > best_aris.get(dname, -1.0):
+                        if dname in best_adatas:
+                            del best_adatas[dname]
                         best_adatas[dname] = adata_curr
                         best_aris[dname] = current_ari
+                    else:
+                        del adata_curr
             except Exception as e:
                 import traceback
                 print(f"Error processing dataset {dname} with seed {seed}: {e}")
                 traceback.print_exc()
+            finally:
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         if len(all_results[dname]) > 0:
             df_metrics = pd.DataFrame(all_results[dname])
