@@ -137,34 +137,39 @@ ENV_MODE = "auto"
 ALL_DATASETS_CONFIG = {
     "mouse-brain-e11-s1": {
         "type": "mouse_brain",
+        "shape": "square",  # MISAR-seq uses a square spatial grid
         "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/multi-omics-datasets/Mouse_Brain_E11_S1/",
-        "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Dataset7_Mouse_Brain_ATAC/",
+        "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Mouse_Brain_E11_S1/",
         "mod2_candidates": ["adata_ATAC.h5ad", "adata_peaks_normalized.h5ad"],
         "anno_file": "anno.csv"
     },
     "mouse-brain-e13-s1": {
         "type": "mouse_brain",
+        "shape": "square",
         "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/multi-omics-datasets/Mouse_Brain_E13_S1/",
-        "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Dataset7_Mouse_Brain_ATAC/",
+        "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Mouse_Brain_E13_S1/",
         "mod2_candidates": ["adata_ATAC.h5ad", "adata_peaks_normalized.h5ad"],
         "anno_file": "anno.csv"
     },
     "mouse-brain-e15-s1": {
         "type": "mouse_brain",
+        "shape": "square",
         "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/multi-omics-datasets/Mouse_Brain_E15_S1/",
-        "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Dataset7_Mouse_Brain_ATAC/",
+        "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Mouse_Brain_E15_S1/",
         "mod2_candidates": ["adata_ATAC.h5ad", "adata_peaks_normalized.h5ad"],
         "anno_file": "anno.csv"
     },
     "mouse-brain-e18-s1": {
         "type": "mouse_brain",
+        "shape": "square",
         "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/multi-omics-datasets/Mouse_Brain_E18_S1/",
-        "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Dataset7_Mouse_Brain_ATAC/",
+        "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Mouse_Brain_E18_S1/",
         "mod2_candidates": ["adata_ATAC.h5ad", "adata_peaks_normalized.h5ad"],
         "anno_file": "anno.csv"
     },
     "human-lymph-node-a1": {
         "type": "human_lymph_node",
+        "shape": "hexagon",  # 10x Visium uses a hexagonal spatial grid
         "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/multi-omics-datasets/Human_Lymph_Node_A1/",
         "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Dataset11_Human_Lymph_Node_A1/",
         "mod2_candidates": ["adata_ADT.h5ad"],
@@ -172,6 +177,7 @@ ALL_DATASETS_CONFIG = {
     },
     "human-lymph-node-d1": {
         "type": "human_lymph_node",
+        "shape": "hexagon",
         "kaggle_dir": "/kaggle/input/datasets/sadmanbiazidarnob/multi-omics-datasets/Human_Lymph_Node_D1/",
         "local_dir": "D:/FYDP/spaLLM/spaLLM/Data_SpatialGlue/Data_SpatialGlue/Dataset12_Human_Lymph_Node_D1/",
         "mod2_candidates": ["adata_ADT.h5ad"],
@@ -1013,6 +1019,15 @@ def run_totalvi_workflow(
     adata_mod2 = sc.read_h5ad(os.path.join(data_dir, mod2_filename))
     adata_mod2.var_names_make_unique()
 
+    # Align spot barcodes across modalities to prevent silent spot misalignment
+    common_obs = adata_rna.obs_names.intersection(adata_mod2.obs_names)
+    if len(common_obs) == 0:
+        raise ValueError(f"No overlapping spot barcodes between RNA and {mod2_filename} in {data_dir}.")
+    if len(common_obs) != adata_rna.n_obs or len(common_obs) != adata_mod2.n_obs or not adata_rna.obs_names.equals(adata_mod2.obs_names):
+        print(f"Aligning spots across modalities: {len(common_obs)} shared barcodes (RNA={adata_rna.n_obs}, Mod2={adata_mod2.n_obs}).")
+        adata_rna = adata_rna[common_obs].copy()
+        adata_mod2 = adata_mod2[common_obs].copy()
+
     # Annotation matching
     annotation_filename = dataset_cfg["anno_file"]
     annotation_path = os.path.join(data_dir, annotation_filename)
@@ -1039,20 +1054,48 @@ def run_totalvi_workflow(
 
     print("RNA shape:", adata_rna.shape)
     print("Modality 2 shape:", adata_mod2.shape)
+    if dataset_type == "mouse_brain":
+        print("[Notice] Mouse Brain dataset uses RNA + ATAC; totalVI models Modality 2 using its protein/ADT branch.")
 
-    # 1. Clean Modality 2 (ATAC/ADT) while sparse to avoid memory spikes
-    if issparse(adata_mod2.X):
-        if (adata_mod2.X.data < 0).any():
-            adata_mod2.X.data = np.clip(adata_mod2.X.data, 0, None)
-        if not np.issubdtype(adata_mod2.X.dtype, np.integer):
-            adata_mod2.X.data = np.round(adata_mod2.X.data).astype(np.float32)
-    else:
-        if np.any(adata_mod2.X < 0):
-            adata_mod2.X = np.clip(adata_mod2.X, a_min=0, a_max=None)
-        if not np.issubdtype(adata_mod2.X.dtype, np.integer):
-            adata_mod2.X = np.round(adata_mod2.X).astype(np.float32)
+    def _to_nonneg_counts(adata_obj, label):
+        """Extract raw non-negative integer counts (preferring layers['counts'] or .raw) for totalVI."""
+        mat = adata_obj.layers['counts'] if 'counts' in adata_obj.layers else adata_obj.X
+        if issparse(mat):
+            data = mat.data
+            has_frac = not np.issubdtype(mat.dtype, np.integer) and np.any(np.abs(data - np.round(data)) > 1e-4)
+            if has_frac and adata_obj.raw is not None and adata_obj.raw.X is not None:
+                try:
+                    raw_sub = adata_obj.raw[:, adata_obj.var_names].X
+                    mat = raw_sub
+                    data = mat.data if issparse(mat) else mat
+                    has_frac = not np.issubdtype(mat.dtype, np.integer) and np.any(np.abs(data - np.round(data)) > 1e-4)
+                except Exception:
+                    pass
+            if has_frac:
+                print(f"[Warning] {label} matrix contains non-integer values (may be normalized); rounding to non-negative counts for totalVI.")
+            mat = mat.copy()
+            if (mat.data < 0).any():
+                mat.data = np.clip(mat.data, 0, None)
+            if not np.issubdtype(mat.dtype, np.integer):
+                mat.data = np.round(mat.data).astype(np.float32)
+        else:
+            has_frac = not np.issubdtype(mat.dtype, np.integer) and np.any(np.abs(mat - np.round(mat)) > 1e-4)
+            if has_frac and adata_obj.raw is not None and adata_obj.raw.X is not None:
+                try:
+                    raw_sub = adata_obj.raw[:, adata_obj.var_names].X
+                    mat = raw_sub.toarray() if issparse(raw_sub) else raw_sub
+                    has_frac = not np.issubdtype(mat.dtype, np.integer) and np.any(np.abs(mat - np.round(mat)) > 1e-4)
+                except Exception:
+                    pass
+            if has_frac:
+                print(f"[Warning] {label} matrix contains non-integer values (may be normalized); rounding to non-negative counts for totalVI.")
+            mat = np.clip(np.round(mat), 0, None).astype(np.float32)
+        return mat
 
-    # Subsetting Modality 2 to top 4,000 most informative features while sparse (avoids OOM on 117k features)
+    # 1. Clean Modality 2 (ADT/ATAC) while sparse to avoid memory spikes
+    adata_mod2.X = _to_nonneg_counts(adata_mod2, "Modality 2")
+
+    # Subsetting Modality 2 to top 4,000 most informative features while sparse (avoids OOM on 117k ATAC peaks)
     if adata_mod2.n_vars > 4000:
         print(f"Subsetting Modality 2 from {adata_mod2.n_vars} to top 4,000 most informative features...")
         if issparse(adata_mod2.X):
@@ -1076,29 +1119,32 @@ def run_totalvi_workflow(
         adata_mod2_subset.X = adata_mod2_subset.X.toarray()
     adata_mod2_subset.X = np.clip(np.round(adata_mod2_subset.X), 0, None).astype(np.float32)
 
-    # 2. Clean RNA and subset to top 4,000 highly variable features
+    # 2. Clean RNA and select top 4,000 highly variable genes via seurat_v3 on raw counts
     adata_rna.obs['batch'] = 'batch_0'
-    if issparse(adata_rna.X):
-        if (adata_rna.X.data < 0).any():
-            adata_rna.X.data = np.clip(adata_rna.X.data, 0, None)
-        if not np.issubdtype(adata_rna.X.dtype, np.integer):
-            adata_rna.X.data = np.round(adata_rna.X.data).astype(np.float32)
-    else:
-        if np.any(adata_rna.X < 0):
-            adata_rna.X = np.clip(adata_rna.X, a_min=0, a_max=None)
-        if not np.issubdtype(adata_rna.X.dtype, np.integer):
-            adata_rna.X = np.round(adata_rna.X).astype(np.float32)
+    adata_rna.X = _to_nonneg_counts(adata_rna, "RNA")
+    adata_rna.layers['counts'] = adata_rna.X.copy()
 
     if adata_rna.n_vars > 4000:
-        print(f"Subsetting RNA from {adata_rna.n_vars} to top 4,000 highly variable features...")
-        if issparse(adata_rna.X):
-            mean_rna = np.array(adata_rna.X.mean(axis=0)).flatten()
-            mean_sq_rna = np.array(adata_rna.X.power(2).mean(axis=0)).flatten()
-            variances_rna = mean_sq_rna - mean_rna**2
-        else:
-            variances_rna = np.var(adata_rna.X, axis=0)
-        top_rna_idx = np.argsort(variances_rna)[::-1][:4000]
-        adata_rna_subset = adata_rna[:, top_rna_idx].copy()
+        print(f"Selecting top 4,000 highly variable genes from {adata_rna.n_vars} RNA features (seurat_v3 on counts)...")
+        try:
+            sc.pp.highly_variable_genes(
+                adata_rna,
+                n_top_genes=4000,
+                flavor="seurat_v3",
+                batch_key="batch",
+                layer="counts",
+            )
+            adata_rna_subset = adata_rna[:, adata_rna.var["highly_variable"]].copy()
+        except Exception as hvg_err:
+            print(f"[Warning] seurat_v3 HVG selection failed ({hvg_err}); falling back to variance-based selection.")
+            if issparse(adata_rna.X):
+                mean_rna = np.array(adata_rna.X.mean(axis=0)).flatten()
+                mean_sq_rna = np.array(adata_rna.X.power(2).mean(axis=0)).flatten()
+                variances_rna = mean_sq_rna - mean_rna**2
+            else:
+                variances_rna = np.var(adata_rna.X, axis=0)
+            top_rna_idx = np.argsort(variances_rna)[::-1][:4000]
+            adata_rna_subset = adata_rna[:, top_rna_idx].copy()
     else:
         adata_rna_subset = adata_rna.copy()
 
@@ -1108,91 +1154,80 @@ def run_totalvi_workflow(
     adata_rna_subset.obs['batch'] = 'batch_0'
     adata_rna_subset.layers['counts'] = adata_rna_subset.X.copy()
 
-    # Execute totalVI Model Training
+    # Execute totalVI Model Training (fail loudly if scvi-tools is missing or errors)
+    if not HAVE_SCVI:
+        raise RuntimeError("scvi-tools is required to run totalVI but is not installed in this environment.")
+
     loss_history = []
     latent_emb = None
+    print(f"Configuring totalVI via scvi-tools on device: {device}...")
+    try:
+        if HAVE_MUDATA:
+            print("Setting up MuData object for totalVI...")
+            mdata = md.MuData({"rna_subset": adata_rna_subset, "protein": adata_mod2_subset})
+            mdata.update()
 
-    if HAVE_SCVI:
-        print(f"Configuring totalVI via scvi-tools on device: {device}...")
+            scvi.model.TOTALVI.setup_mudata(
+                mdata,
+                rna_layer="counts",
+                protein_layer=None,
+                batch_key="batch",
+                modalities={
+                    "rna_layer": "rna_subset",
+                    "protein_layer": "protein",
+                    "batch_key": "rna_subset",
+                }
+            )
+            vae = scvi.model.TOTALVI(mdata, n_latent=64)
+        else:
+            print("MuData not detected, using AnnData direct setup for totalVI...")
+            adata_combined = adata_rna_subset.copy()
+            adata_combined.obsm["protein_expression"] = adata_mod2_subset.X
+            scvi.model.TOTALVI.setup_anndata(
+                adata_combined,
+                protein_expression_obsm_key="protein_expression",
+                layer="counts",
+                batch_key="batch"
+            )
+            vae = scvi.model.TOTALVI(adata_combined, n_latent=64)
+
+        use_gpu = torch.cuda.is_available() and device.type == 'cuda'
+        accelerator = "gpu" if use_gpu else "cpu"
+        print(f"Training totalVI model for {epochs} epochs (accelerator='{accelerator}')...")
+
+        progress_cb = TotalVIProgressCallback(print_every=25)
         try:
-            if HAVE_MUDATA:
-                print("Setting up MuData object for totalVI...")
-                mdata = md.MuData({"rna_subset": adata_rna_subset, "protein": adata_mod2_subset})
-                mdata.update()
-
-                scvi.model.TOTALVI.setup_mudata(
-                    mdata,
-                    rna_layer="counts",
-                    protein_layer=None,
-                    batch_key="batch",
-                    modalities={
-                        "rna_layer": "rna_subset",
-                        "protein_layer": "protein",
-                        "batch_key": "rna_subset",
-                    }
-                )
-                vae = scvi.model.TOTALVI(mdata, n_latent=64)
-            else:
-                print("MuData not detected, using AnnData direct setup for totalVI...")
-                adata_combined = adata_rna_subset.copy()
-                adata_combined.obsm["protein_expression"] = adata_mod2_subset.X
-                scvi.model.TOTALVI.setup_anndata(
-                    adata_combined,
-                    protein_expression_obsm_key="protein_expression",
-                    layer="counts",
-                    batch_key="batch"
-                )
-                vae = scvi.model.TOTALVI(adata_combined, n_latent=64)
-
-            use_gpu = torch.cuda.is_available() and device.type == 'cuda'
-            accelerator = "gpu" if use_gpu else "cpu"
-            print(f"Training totalVI model for {epochs} epochs (accelerator='{accelerator}')...")
-
-            progress_cb = TotalVIProgressCallback(print_every=25)
+            # Modern scvi-tools with accelerator and live progress logging
+            vae.train(
+                max_epochs=epochs,
+                accelerator=accelerator,
+                callbacks=[progress_cb],
+                enable_progress_bar=False
+            )
+        except TypeError:
             try:
-                # Modern scvi-tools with accelerator and live progress logging
-                vae.train(
-                    max_epochs=epochs,
-                    accelerator=accelerator,
-                    callbacks=[progress_cb],
-                    enable_progress_bar=False
-                )
+                vae.train(max_epochs=epochs, accelerator=accelerator)
             except TypeError:
                 try:
-                    vae.train(max_epochs=epochs, accelerator=accelerator)
+                    vae.train(max_epochs=epochs, use_gpu=use_gpu)
                 except TypeError:
-                    try:
-                        vae.train(max_epochs=epochs, use_gpu=use_gpu)
-                    except TypeError:
-                        vae.train(max_epochs=epochs)
+                    vae.train(max_epochs=epochs)
 
-            latent_emb = vae.get_latent_representation()
-            if hasattr(vae, "history") and "elbo_train" in vae.history:
-                df_elbo = vae.history["elbo_train"]
-                loss_history = df_elbo.iloc[:, 0].tolist() if isinstance(df_elbo, pd.DataFrame) else list(df_elbo)
-            print("totalVI latent representation extracted with shape:", latent_emb.shape)
-        except Exception as e:
-            print(f"Warning: scvi totalVI execution encountered an issue ({e}). Running PCA fallback...")
-            pass
-        finally:
-            if 'vae' in locals():
-                del vae
-            if 'mdata' in locals():
-                del mdata
-            if 'adata_combined' in locals():
-                del adata_combined
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-    if latent_emb is None:
-        print("[Notice] Using standard concatenated PCA fallback representation for dry-run/testing...")
-        rna_mat = adata_rna_subset.X.toarray() if issparse(adata_rna_subset.X) else adata_rna_subset.X
-        mod2_mat = adata_mod2_subset.X.toarray() if issparse(adata_mod2_subset.X) else adata_mod2_subset.X
-        pca_rna = PCA(n_components=min(32, rna_mat.shape[0] - 1, rna_mat.shape[1] - 1)).fit_transform(rna_mat)
-        pca_mod2 = PCA(n_components=min(32, mod2_mat.shape[0] - 1, mod2_mat.shape[1] - 1)).fit_transform(mod2_mat)
-        latent_emb = np.concatenate([pca_rna, pca_mod2], axis=1)
-        loss_history = [float(100.0 / (i + 1)) for i in range(epochs)]
+        latent_emb = vae.get_latent_representation()
+        if hasattr(vae, "history") and "elbo_train" in vae.history:
+            df_elbo = vae.history["elbo_train"]
+            loss_history = df_elbo.iloc[:, 0].tolist() if isinstance(df_elbo, pd.DataFrame) else list(df_elbo)
+        print("totalVI latent representation extracted with shape:", latent_emb.shape)
+    finally:
+        if 'vae' in locals():
+            del vae
+        if 'mdata' in locals():
+            del mdata
+        if 'adata_combined' in locals():
+            del adata_combined
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     # Free temporary subsetted objects
     del adata_rna_subset, adata_mod2_subset
@@ -1206,18 +1241,9 @@ def run_totalvi_workflow(
     adata.obsm['feat'] = latent_emb
     adata.obsm['totalVI'] = latent_emb
 
-    # Compute relative modality loading proxy from the 64 latent dimensions
-    try:
-        rna_sub = latent_emb[:, :32]
-        aux_sub = latent_emb[:, 32:64]
-        rna_norm = np.linalg.norm(rna_sub, axis=1)
-        aux_norm = np.linalg.norm(aux_sub, axis=1)
-        total_norm = rna_norm + aux_norm + 1e-8
-        adata.obs['mean_rna_attention'] = rna_norm / total_norm
-        adata.obs['mean_aux_attention'] = aux_norm / total_norm
-    except Exception:
-        adata.obs['mean_rna_attention'] = 0.5
-        adata.obs['mean_aux_attention'] = 0.5
+    # totalVI learns a joint latent space without per-modality attention weights
+    adata.obs['mean_rna_attention'] = 0.5
+    adata.obs['mean_aux_attention'] = 0.5
 
     # Determine cluster count
     valid_mask = (adata.obs['ground_truth'] != 'unknown') & (adata.obs['ground_truth'] != 'Exclude')
@@ -1290,6 +1316,7 @@ def run_totalvi_workflow(
     hyperparameters = {
         "epochs": epochs,
         "n_latent": 64,
+        "grid_shape": dataset_cfg.get("shape", "unknown"),
         "clustering_tool": primary_alg,
         "all_algorithms": {
             "KMeans": metrics_kmeans,
