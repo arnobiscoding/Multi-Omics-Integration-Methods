@@ -1596,12 +1596,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SpaGCN Multi-Seed Benchmark Pipeline")
     parser.add_argument("--datasets", nargs="+", default=["all"], help="Datasets to execute (e.g. mouse-brain-e11-s1 or 'all')")
     parser.add_argument("--seeds", nargs="+", type=int, default=SEEDS, help="Random seeds to evaluate")
-    parser.add_argument("--model_type", type=str, default="gc_dec", choices=["simple_gc_dec", "gc_dec"],
+    parser.add_argument("--model_type", type=str, default="simple_gc_dec", choices=["simple_gc_dec", "gc_dec"],
                         help="DEC backbone: 'simple_gc_dec' (official SpaGCN) or 'gc_dec' (2-layer ReLU+Dropout)")
     parser.add_argument("--init", type=str, default="louvain", choices=["louvain", "kmeans"],
                         help="DEC centroid initialization ('louvain' matches official SpaGCN, falls back to kmeans if missing)")
     parser.add_argument("--lr", type=float, default=0.005, help="Learning rate for SpaGCN Adam optimizer")
-    parser.add_argument("--epochs", type=int, default=200, help="Training epochs for SpaGCN GCN-DEC")
+    parser.add_argument("--epochs", type=int, default=2000, help="Training epochs for SpaGCN GCN-DEC")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device (cuda or cpu)")
     parser.add_argument("--out_dir", type=str, default="results", help="Directory to save benchmark metrics and plots")
     parser.add_argument("--no_dashboard", action="store_true", help="Disable uploading to dashboard")
