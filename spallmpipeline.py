@@ -63,9 +63,7 @@ ALL_DATASETS_CONFIG = {
 
 ACTIVE_DATASETS = ["all"]
 
-SEEDS = [
-    42, 0, 1, 7, 123, 1234, 2022, 2023, 2024, 1337
-]
+SEEDS = [42, 0, 7, 123, 1234, 2022, 2023, 2024, 1337]
 
 active_config_keys = list(ALL_DATASETS_CONFIG.keys())
 datasets_to_run = active_config_keys if (len(ACTIVE_DATASETS) == 1 and ACTIVE_DATASETS[0].lower() == "all") else [d for d in ACTIVE_DATASETS if d in ALL_DATASETS_CONFIG]
@@ -125,7 +123,7 @@ import sklearn
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 from sklearn.neighbors import NearestNeighbors, kneighbors_graph
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from scipy.sparse import coo_matrix
 import anndata as ad
 import scanpy as sc
@@ -190,11 +188,14 @@ def make_json_serializable(obj):
     if isinstance(obj, np.ndarray):
         return [make_json_serializable(x) for x in obj.tolist()]
     if isinstance(obj, (np.floating, np.float32, np.float64, np.float16)):
-        return float(obj)
+        val = float(obj)
+        return 0.0 if (np.isnan(val) or np.isinf(val)) else val
     if isinstance(obj, (np.integer, np.int64, np.int32, np.int16, np.int8)):
         return int(obj)
     if isinstance(obj, (np.bool_, bool)):
         return bool(obj)
+    if isinstance(obj, float):
+        return 0.0 if (np.isnan(obj) or np.isinf(obj)) else obj
     if isinstance(obj, dict):
         return {str(k): make_json_serializable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
@@ -238,6 +239,7 @@ def export_dashboard_experiment(
     metrics_dict: dict,
     training_results: dict,
     hyperparameters: dict,
+    duration_seconds: float = 0.0,
     embeddings_data: Optional[dict] = None,
     output_dir: str = "results",
     api_url: Optional[str] = DEFAULT_API_URL,
@@ -282,7 +284,7 @@ def export_dashboard_experiment(
     safe_embeddings = make_json_serializable(embeddings_data or {})
 
     best_epoch = int(training_results.get("best_epoch", len(loss_hist)))
-    best_score = float(training_results.get("best_sil", metrics_dict.get("Silhouette", 0.0)))
+    best_score = float(safe_metrics.get("Silhouette", 0.0))
 
     # 2. Local JSON Files Save
     with open(os.path.join(exp_dir, "metrics.json"), "w", encoding="utf-8") as f:
@@ -293,6 +295,7 @@ def export_dashboard_experiment(
             "final_epoch": len(loss_hist),
             "best_epoch": best_epoch,
             "best_score": best_score,
+            "durationSeconds": float(duration_seconds),
             "metrics": safe_metrics
         }, f, indent=2)
 
@@ -304,6 +307,7 @@ def export_dashboard_experiment(
             "model_name": model_name,
             "dataset": dataset_name,
             "seed": int(seed),
+            "durationSeconds": float(duration_seconds),
             "hyperparameters": safe_hyperparameters
         }, f, indent=2)
 
@@ -321,6 +325,7 @@ def export_dashboard_experiment(
                 "seed": int(seed),
                 "bestEpoch": best_epoch,
                 "bestScore": best_score,
+                "durationSeconds": float(duration_seconds),
                 "finalMetrics": safe_metrics,
                 "history": safe_history,
                 "embeddingsData": safe_embeddings,
@@ -341,10 +346,10 @@ def export_dashboard_experiment(
             )
             with urllib.request.urlopen(req, timeout=15) as response:
                 if response.status == 200:
-                    print(f"[Dashboard] Successfully uploaded experiment results to Dashboard via API ({api_url})!")
+                    print(f"🚀 Sent {model_name} ({dataset_name}, seed={seed}, {duration_seconds:.2f}s) to Dashboard API!")
                     return True
         except Exception as e:
-            print(f"[Dashboard Info] Direct API push skipped ({e}). Data is safely stored in JSON files.")
+            print(f"ℹ️ Direct API push skipped ({e}). Data saved locally in {exp_dir}.")
     return False
 
 def init_weights(*params):
@@ -678,50 +683,127 @@ def search_res(adata, n_clusters, method='leiden', use_rep='spaLLM', start=0.1, 
     print(f'Warning: Target cluster count {n_clusters} not reached exact match. Using res=0.5')
     return 0.5
 
-def evaluate_clustering(y_true_series, y_pred_series, features_matrix, name=""):
-    """Evaluate clustering performance using ARI, NMI, Silhouette, AMI, CHI, DBI, Homogeneity, and V-measure."""
+def compute_chaos(spatial_coords, labels):
+    """Spatial CHAOS score (Shang & Zhou, Nature Communications 2022). Lower is better."""
+    coords = np.asarray(spatial_coords, dtype=np.float64)
+    labels = np.asarray(labels)
+    n_spots = len(labels)
+    if n_spots <= 1:
+        return 0.0
+    coords_norm = StandardScaler().fit_transform(coords)
+    total_dist = 0.0
+    for cl in np.unique(labels):
+        idx = np.where(labels == cl)[0]
+        if len(idx) <= 1:
+            continue
+        sub_coords = coords_norm[idx]
+        nbrs = NearestNeighbors(n_neighbors=2, metric='euclidean').fit(sub_coords)
+        dists, _ = nbrs.kneighbors(sub_coords)
+        total_dist += float(np.sum(dists[:, 1]))
+    return float(total_dist / n_spots)
+
+
+def compute_pas(spatial_coords, labels, k=10):
+    """Percentage of Abnormal Spots (Shang & Zhou, Nature Communications 2022). Lower is better."""
+    coords = np.asarray(spatial_coords, dtype=np.float64)
+    labels = np.asarray(labels)
+    n_spots = len(labels)
+    k_eff = min(k, n_spots - 1)
+    if k_eff <= 0:
+        return 0.0
+    nbrs = NearestNeighbors(n_neighbors=k_eff + 1, metric='euclidean').fit(coords)
+    _, indices = nbrs.kneighbors(coords)
+    neighbor_labels = labels[indices[:, 1:]]
+    diff_frac = np.mean(neighbor_labels != labels[:, None], axis=1)
+    return float(np.mean(diff_frac > 0.5))
+
+
+def compute_morans_i(spatial_coords, labels, k=10):
+    """Permutation-invariant mean Moran's I across one-hot domain indicators. Higher is better."""
+    coords = np.asarray(spatial_coords, dtype=np.float64)
+    labels = np.asarray(labels)
+    n_spots = len(labels)
+    k_eff = min(k, n_spots - 1)
+    if k_eff <= 0:
+        return 0.0
+    W = kneighbors_graph(coords, n_neighbors=k_eff, mode='connectivity', include_self=False)
+    W = W.maximum(W.T).tocsr()
+    W_sum = float(W.sum())
+    if W_sum <= 0.0:
+        return 0.0
+    moran_vals = []
+    for cl in np.unique(labels):
+        y = (labels == cl).astype(np.float64)
+        y_c = y - y.mean()
+        denom = float(np.dot(y_c, y_c))
+        if denom <= 1e-12:
+            continue
+        num = float(y_c @ (W @ y_c))
+        moran_vals.append((n_spots / W_sum) * (num / denom))
+    return float(np.mean(moran_vals)) if len(moran_vals) > 0 else 0.0
+
+
+def evaluate_clustering(y_true_series, y_pred_series, features_matrix, name="", spatial_coords=None):
+    """Evaluate clustering performance across supervised, unsupervised, and spatial coherence metrics."""
     mask = (y_true_series != 'Exclude') & (y_true_series != 'unknown') & (y_true_series.notna())
     y_true = y_true_series[mask].astype(str)
-    y_pred = y_pred_series[mask].astype(str)
+    y_pred_eval = y_pred_series[mask].astype(str)
     feats = features_matrix[mask]
 
-    if len(y_true) == 0 or len(np.unique(y_pred)) < 2:
+    if len(y_true) == 0 or len(np.unique(y_pred_eval)) < 2:
         return {
-            'ARI': 0.0, 'NMI': 0.0, 'Silhouette': 0.0,
-            'AMI': 0.0, 'CHI': 0.0, 'DBI': 0.0,
-            'Homogeneity': 0.0, 'V-measure': 0.0
+            'ARI': 0.0, 'NMI': 0.0, 'AMI': 0.0,
+            'Homogeneity': 0.0, 'V-measure': 0.0,
+            'Silhouette': 0.0, 'CHI': 0.0, 'DBI': 0.0,
+            'Morans_I': 0.0, 'PAS': 0.0, 'CHAOS': 0.0
         }
 
-    ari = adjusted_rand_score(y_true, y_pred)
-    nmi = normalized_mutual_info_score(y_true, y_pred)
-    ami = adjusted_mutual_info_score(y_true, y_pred)
-    homo = homogeneity_score(y_true, y_pred)
-    v_meas = v_measure_score(y_true, y_pred)
+    ari = adjusted_rand_score(y_true, y_pred_eval)
+    nmi = normalized_mutual_info_score(y_true, y_pred_eval)
+    ami = adjusted_mutual_info_score(y_true, y_pred_eval)
+    homo = homogeneity_score(y_true, y_pred_eval)
+    v_meas = v_measure_score(y_true, y_pred_eval)
+
+    y_pred_int = LabelEncoder().fit_transform(y_pred_eval)
 
     try:
-        sil = silhouette_score(feats, y_pred)
+        sil = float(silhouette_score(feats, y_pred_int))
     except Exception:
         sil = 0.0
 
     try:
-        chi = calinski_harabasz_score(feats, y_pred)
+        chi = float(calinski_harabasz_score(feats, y_pred_int))
     except Exception:
         chi = 0.0
 
     try:
-        dbi = davies_bouldin_score(feats, y_pred)
+        dbi = float(davies_bouldin_score(feats, y_pred_int))
     except Exception:
         dbi = 0.0
+
+    if spatial_coords is not None:
+        try:
+            y_pred_all = np.asarray(y_pred_series).astype(str)
+            morans_i = compute_morans_i(spatial_coords, y_pred_all, k=10)
+            pas_score = compute_pas(spatial_coords, y_pred_all, k=10)
+            chaos_score = compute_chaos(spatial_coords, y_pred_all)
+        except Exception:
+            morans_i, pas_score, chaos_score = 0.0, 0.0, 0.0
+    else:
+        morans_i, pas_score, chaos_score = 0.0, 0.0, 0.0
 
     metrics = {
         'ARI': float(ari),
         'NMI': float(nmi),
-        'Silhouette': float(sil),
         'AMI': float(ami),
+        'Homogeneity': float(homo),
+        'V-measure': float(v_meas),
+        'Silhouette': float(sil),
         'CHI': float(chi),
         'DBI': float(dbi),
-        'Homogeneity': float(homo),
-        'V-measure': float(v_meas)
+        'Morans_I': float(morans_i),
+        'PAS': float(pas_score),
+        'CHAOS': float(chaos_score)
     }
 
     if name:
@@ -775,7 +857,7 @@ def plot_spallm_summary_boxplots(df_all, save_dir=None):
         print("No valid metrics found for Box & Whiskers plots.")
         return
 
-    metrics = ["ARI", "NMI", "Silhouette", "AMI", "CHI", "DBI", "Homogeneity", "V-measure"]
+    metrics = ["ARI", "NMI", "AMI", "Homogeneity", "V-measure", "Silhouette", "CHI", "DBI", "Morans_I", "PAS", "CHAOS"]
     metrics = [m for m in metrics if m in df_all.columns]
     if not metrics:
         return
@@ -1541,6 +1623,7 @@ print(f"Using device: {device} (If this says 'cpu', make sure GPU is enabled!)")
 def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_plots=False,
                         dashboard_token=None, api_url=DEFAULT_API_URL, output_dir=None):
     print(f"\n--- Running Seed: {seed} ---")
+    seed_start_time = time.time()
     fix_seed(seed)
     
     # 1. Resolve paths
@@ -1737,64 +1820,52 @@ def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_
     print("Running mclust via rpy2 on spaLLM embeddings...")
     adata.obs['mclust'] = run_mclust(spallm_emb, n_clusters, seed=seed)
 
+    duration_sec = round(time.time() - seed_start_time, 2)
+    spatial_coords_eval = adata.obsm.get('spatial', None)
+
     # 6. Evaluation
     metrics_kmeans = evaluate_clustering(
         adata.obs['ground_truth'],
         adata.obs['kmeans'],
         spallm_emb,
-        name=f"spaLLM {dataset_name} Seed {seed} - KMeans"
+        name=f"spaLLM {dataset_name} Seed {seed} - KMeans",
+        spatial_coords=spatial_coords_eval
     )
 
     metrics_leiden = evaluate_clustering(
         adata.obs['ground_truth'],
         adata.obs['leiden'],
         spallm_emb,
-        name=f"spaLLM {dataset_name} Seed {seed} - Leiden"
+        name=f"spaLLM {dataset_name} Seed {seed} - Leiden",
+        spatial_coords=spatial_coords_eval
     )
 
     metrics_mclust = evaluate_clustering(
         adata.obs['ground_truth'],
         adata.obs['mclust'],
         spallm_emb,
-        name=f"spaLLM {dataset_name} Seed {seed} - mclust"
+        name=f"spaLLM {dataset_name} Seed {seed} - mclust",
+        spatial_coords=spatial_coords_eval
     )
 
     row_kmeans = {
         'cluster alg': 'KMeans',
-        'ARI': metrics_kmeans['ARI'],
-        'NMI': metrics_kmeans['NMI'],
-        'Silhouette': metrics_kmeans['Silhouette'],
-        'AMI': metrics_kmeans['AMI'],
-        'CHI': metrics_kmeans['CHI'],
-        'DBI': metrics_kmeans['DBI'],
-        'Homogeneity': metrics_kmeans['Homogeneity'],
-        'V-measure': metrics_kmeans['V-measure'],
+        **metrics_kmeans,
+        'Duration': duration_sec,
         'resolution': None
     }
 
     row_leiden = {
         'cluster alg': 'Leiden',
-        'ARI': metrics_leiden['ARI'],
-        'NMI': metrics_leiden['NMI'],
-        'Silhouette': metrics_leiden['Silhouette'],
-        'AMI': metrics_leiden['AMI'],
-        'CHI': metrics_leiden['CHI'],
-        'DBI': metrics_leiden['DBI'],
-        'Homogeneity': metrics_leiden['Homogeneity'],
-        'V-measure': metrics_leiden['V-measure'],
+        **metrics_leiden,
+        'Duration': duration_sec,
         'resolution': None
     }
 
     row_mclust = {
         'cluster alg': 'mclust',
-        'ARI': metrics_mclust['ARI'],
-        'NMI': metrics_mclust['NMI'],
-        'Silhouette': metrics_mclust['Silhouette'],
-        'AMI': metrics_mclust['AMI'],
-        'CHI': metrics_mclust['CHI'],
-        'DBI': metrics_mclust['DBI'],
-        'Homogeneity': metrics_mclust['Homogeneity'],
-        'V-measure': metrics_mclust['V-measure'],
+        **metrics_mclust,
+        'Duration': duration_sec,
         'resolution': None
     }
 
@@ -1852,19 +1923,16 @@ def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_
     metrics_dict = {
         "ARI": float(primary_metrics.get('ARI', 0.0)),
         "NMI": float(primary_metrics.get('NMI', 0.0)),
-        "Silhouette": float(primary_metrics.get('Silhouette', 0.0)),
         "AMI": float(primary_metrics.get('AMI', 0.0)),
-        "CHI": float(primary_metrics.get('CHI', 0.0)),
-        "DBI": float(primary_metrics.get('DBI', 0.0)),
         "Homogeneity": float(primary_metrics.get('Homogeneity', 0.0)),
         "V-measure": float(primary_metrics.get('V-measure', 0.0)),
+        "Silhouette": float(primary_metrics.get('Silhouette', 0.0)),
+        "CHI": float(primary_metrics.get('CHI', 0.0)),
+        "DBI": float(primary_metrics.get('DBI', 0.0)),
+        "Morans_I": float(primary_metrics.get('Morans_I', 0.0)),
+        "PAS": float(primary_metrics.get('PAS', 0.0)),
+        "CHAOS": float(primary_metrics.get('CHAOS', 0.0)),
     }
-    try:
-        mask = (adata.obs['ground_truth'] != 'Exclude') & (adata.obs['ground_truth'] != 'unknown') & (adata.obs['ground_truth'].notna())
-        if mask.sum() > 0:
-            metrics_dict["FMI"] = float(fowlkes_mallows_score(adata.obs['ground_truth'][mask], adata.obs[primary_alg][mask]))
-    except Exception:
-        pass
 
     hyperparameters = {
         "epochs": 800,
@@ -1893,6 +1961,7 @@ def run_spallm_workflow(dataset_name, dataset_cfg, env_mode, seed, device, show_
         metrics_dict=metrics_dict,
         training_results=output,
         hyperparameters=hyperparameters,
+        duration_seconds=duration_sec,
         embeddings_data=embeddings_data,
         output_dir=out_dir,
         api_url=api_url,
@@ -1971,11 +2040,7 @@ def main(
         print("=" * 85 + "\n")
         return
 
-    # Authenticate to dashboard API using provided credentials
     dashboard_token = None
-    if api_url and username and password:
-        base_url = api_url.split("/api/")[0] if "/api/" in api_url else DEFAULT_DASHBOARD_URL
-        dashboard_token = authenticate_dashboard(base_url=base_url, username=username, password=password)
 
     active_datasets = datasets if datasets is not None else datasets_to_run
     active_seeds = seeds if seeds is not None else SEEDS
@@ -2034,7 +2099,7 @@ def main(
             print(f"\n=======================================================")
             print(f"AVERAGE PERFORMANCE FOR {dname} ({len(active_seeds)} seeds)")
             print(f"=======================================================")
-            numeric_cols = ["ARI", "NMI", "Silhouette", "AMI", "CHI", "DBI", "Homogeneity", "V-measure"]
+            numeric_cols = ["ARI", "NMI", "AMI", "Homogeneity", "V-measure", "Silhouette", "CHI", "DBI", "Morans_I", "PAS", "CHAOS", "Duration"]
             for alg, df_alg in df_metrics.groupby("cluster alg"):
                 print(f"\n--- {alg} Performance (Mean ± Std) ---")
                 means = df_alg[numeric_cols].mean()
@@ -2105,6 +2170,7 @@ if __name__ == '__main__':
     parser.add_argument('--password', type=str, default=DEFAULT_PASSWORD, help="Dashboard account password")
     parser.add_argument('--api_url', type=str, default=DEFAULT_API_URL, help="Dashboard upload API endpoint")
     parser.add_argument('--datasets', nargs='+', default=None, help="Datasets to run (e.g. mouse-brain-e11-s1 or 'all')")
+    parser.add_argument('--seed', type=int, default=None, help="Single seed to evaluate")
     parser.add_argument('--seeds', nargs='+', type=int, default=None, help="Specific seeds to evaluate")
     parser.add_argument('--output_dir', type=str, default=None, help="Directory to save CSV results, plots, and JSONs")
     parser.add_argument('--generate_plots', action='store_true', help="Generate linearity CSV, summary plots, spatial domain/attention maps, and UMAP plots from existing benchmark results without re-training")
@@ -2119,12 +2185,14 @@ if __name__ == '__main__':
         else:
             selected_datasets = [d for d in args.datasets if d in ALL_DATASETS_CONFIG]
 
+    selected_seeds = [args.seed] if args.seed is not None else args.seeds
+
     main(
         username=args.username,
         password=args.password,
         api_url=args.api_url,
         datasets=selected_datasets,
-        seeds=args.seeds,
+        seeds=selected_seeds,
         output_dir=args.output_dir,
         generate_plots=args.generate_plots,
         results_csv=args.results_csv
