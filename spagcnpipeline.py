@@ -1346,11 +1346,14 @@ def run_spagcn_workflow(
     adj_dist = calculate_spatial_adj_matrix(coords[:, 0], coords[:, 1])
 
     # 2. Official SpaGCN RNA Preprocessing (ez_mode.py + SpaGCN.py)
-    print("Preprocessing RNA for SpaGCN (filter_genes -> prefilter_specialgenes -> normalize_per_cell -> log1p -> PCA50)...")
+    print("Preprocessing RNA for SpaGCN (filter_genes -> prefilter_specialgenes -> normalize_total -> log1p -> PCA50)...")
     adata_rna_norm = adata_rna.copy()
     sc.pp.filter_genes(adata_rna_norm, min_cells=3)
     _prefilter_specialgenes(adata_rna_norm, gene1_pattern="ERCC", gene2_pattern="MT-")
-    sc.pp.normalize_per_cell(adata_rna_norm)
+    if hasattr(sc.pp, "normalize_per_cell"):
+        sc.pp.normalize_per_cell(adata_rna_norm)
+    else:
+        sc.pp.normalize_total(adata_rna_norm)
     sc.pp.log1p(adata_rna_norm)
     X_rna_mat = adata_rna_norm.X.toarray() if issparse(adata_rna_norm.X) else np.asarray(adata_rna_norm.X, dtype=np.float32)
     n_pcs_rna = min(50, X_rna_mat.shape[0] - 1, X_rna_mat.shape[1])
