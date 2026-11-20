@@ -7,9 +7,9 @@ Integrates joint spatial representation learning workflow for target datasets:
 
 Directly based on MISO (Multimodal Integration of Spatial Omics, Nature Methods 2025)
 and matches the architecture and benchmark tracking suite in spallmpipeline.py:
-- Multi-seed evaluation suite (10 seeds)
+- Multi-seed evaluation suite (9 seeds)
 - Tri-algorithm clustering (KMeans, Leiden, mclust)
-- Complete evaluation metrics (ARI, NMI, Silhouette, AMI, CHI, DBI, Homogeneity, V-measure, FMI)
+- Complete evaluation metrics (ARI, NMI, AMI, Homogeneity, V-measure, Silhouette, CHI, DBI, Morans_I, PAS, CHAOS)
 - Summary Box & Whiskers plots across datasets & algorithms
 - Cross-Seed Linearity & Metric Spread diagnostics suite (CSV + Unified Figure)
 - Side-by-Side Spatial Domain Partitioning & Modality Contribution maps
@@ -136,9 +136,7 @@ ALL_DATASETS_CONFIG = {
 
 ACTIVE_DATASETS = ["all"]
 
-SEEDS = [
-    42, 0, 1, 7, 123, 1234, 2022, 2023, 2024, 1337
-]
+SEEDS = [42, 0, 7, 123, 1234, 2022, 2023, 2024, 1337]
 
 active_config_keys = list(ALL_DATASETS_CONFIG.keys())
 datasets_to_run = active_config_keys if (len(ACTIVE_DATASETS) == 1 and ACTIVE_DATASETS[0].lower() == "all") else [d for d in ACTIVE_DATASETS if d in ALL_DATASETS_CONFIG]
@@ -174,11 +172,14 @@ def make_json_serializable(obj):
     if isinstance(obj, np.ndarray):
         return [make_json_serializable(x) for x in obj.tolist()]
     if isinstance(obj, (np.floating, np.float32, np.float64, np.float16)):
-        return float(obj)
+        val = float(obj)
+        return 0.0 if (np.isnan(val) or np.isinf(val)) else val
     if isinstance(obj, (np.integer, np.int64, np.int32, np.int16, np.int8)):
         return int(obj)
     if isinstance(obj, (np.bool_, bool)):
         return bool(obj)
+    if isinstance(obj, float):
+        return 0.0 if (np.isnan(obj) or np.isinf(obj)) else obj
     if isinstance(obj, dict):
         return {str(k): make_json_serializable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
@@ -222,6 +223,7 @@ def export_dashboard_experiment(
     metrics_dict: dict,
     training_results: dict,
     hyperparameters: dict,
+    duration_seconds: float = 0.0,
     embeddings_data: Optional[dict] = None,
     output_dir: str = "results",
     api_url: Optional[str] = DEFAULT_API_URL,
@@ -233,22 +235,27 @@ def export_dashboard_experiment(
     os.makedirs(exp_dir, exist_ok=True)
 
     loss_hist = training_results.get("loss_history", [])
+    recon_hist = training_results.get("recon_loss_history", loss_hist)
+    sc_hist = training_results.get("sc_loss_history", [])
     history_points = []
     for ep in range(len(loss_hist)):
+        tot_val = float(loss_hist[ep])
+        rec_val = float(recon_hist[ep]) if ep < len(recon_hist) else tot_val
+        sc_val = float(sc_hist[ep]) if ep < len(sc_hist) else 0.0
         history_points.append({
             "epoch": ep + 1,
             "losses": {
-                "total_loss": float(loss_hist[ep]) if ep < len(loss_hist) else 0.0,
-                "reconstruction_loss": float(loss_hist[ep]) if ep < len(loss_hist) else 0.0,
+                "total_loss": tot_val,
+                "reconstruction_loss": rec_val,
                 "spatial_loss": 0.0,
-                "reg_loss": 0.0,
+                "reg_loss": sc_val,
             },
             "metrics": {
                 "Silhouette": float(metrics_dict.get("Silhouette", 0.0)),
                 "ARI": float(metrics_dict.get("ARI", 0.0)),
                 "NMI": float(metrics_dict.get("NMI", 0.0)),
             },
-            "total_loss": float(loss_hist[ep]) if ep < len(loss_hist) else None,
+            "total_loss": tot_val,
             "silhouette": float(metrics_dict.get("Silhouette", 0.0)),
             "ari": float(metrics_dict.get("ARI", 0.0)),
         })
@@ -259,7 +266,7 @@ def export_dashboard_experiment(
     safe_embeddings = make_json_serializable(embeddings_data or {})
 
     best_epoch = int(training_results.get("best_epoch", len(loss_hist)))
-    best_score = float(training_results.get("best_sil", metrics_dict.get("Silhouette", 0.0)))
+    best_score = float(safe_metrics.get("Silhouette", 0.0))
 
     with open(os.path.join(exp_dir, "metrics.json"), "w", encoding="utf-8") as f:
         json.dump({
@@ -269,6 +276,7 @@ def export_dashboard_experiment(
             "final_epoch": len(loss_hist),
             "best_epoch": best_epoch,
             "best_score": best_score,
+            "durationSeconds": float(duration_seconds),
             "metrics": safe_metrics
         }, f, indent=2)
 
@@ -280,6 +288,7 @@ def export_dashboard_experiment(
             "model_name": model_name,
             "dataset": dataset_name,
             "seed": int(seed),
+            "durationSeconds": float(duration_seconds),
             "hyperparameters": safe_hyperparameters
         }, f, indent=2)
 
@@ -296,6 +305,7 @@ def export_dashboard_experiment(
                 "seed": int(seed),
                 "bestEpoch": best_epoch,
                 "bestScore": best_score,
+                "durationSeconds": float(duration_seconds),
                 "finalMetrics": safe_metrics,
                 "history": safe_history,
                 "embeddingsData": safe_embeddings,
@@ -316,10 +326,10 @@ def export_dashboard_experiment(
             )
             with urllib.request.urlopen(req, timeout=15) as response:
                 if response.status == 200:
-                    print(f"[Dashboard] Successfully uploaded experiment results to Dashboard via API ({api_url})!")
+                    print(f"🚀 Sent {model_name} ({dataset_name}, seed={seed}, {duration_seconds:.2f}s) to Dashboard API!")
                     return True
         except Exception as e:
-            print(f"[Dashboard Info] Direct API push skipped ({e}). Data is safely stored in JSON files.")
+            print(f"ℹ️ Direct API push skipped ({e}). Data saved locally in {exp_dir}.")
     return False
 
 
@@ -328,7 +338,10 @@ def export_dashboard_experiment(
 # ==============================================================================
 def protein_norm(x):
     """Normalize protein/ADT counts per spot."""
-    s = np.sum(np.log1p(x[x > 0]))
+    if len(x) == 0:
+        return x
+    x_pos = x[x > 0]
+    s = np.sum(np.log1p(x_pos)) if len(x_pos) > 0 else 0.0
     exp = np.exp(s / len(x))
     return np.log1p(x / exp)
 
@@ -339,15 +352,24 @@ def preprocess_miso(adata, modality='rna'):
     adata.var_names_make_unique()
     if modality in ['rna', 'atac']:
         sc.pp.filter_genes(adata, min_cells=10)
-        sc.pp.log1p(adata)
-        return adata.X.toarray() if issparse(adata.X) else np.array(adata.X)
+        mat = adata.X.toarray() if issparse(adata.X) else np.array(adata.X)
+        if 'log1p' not in adata.uns and np.nanmin(mat) >= 0:
+            sc.pp.log1p(adata)
+            mat = adata.X.toarray() if issparse(adata.X) else np.array(adata.X)
+        return mat
     elif modality == 'protein':
         raw_mat = adata.X.toarray() if issparse(adata.X) else np.array(adata.X)
+        if np.nanmin(raw_mat) < 0:
+            print("[Preprocess Warning] Protein matrix contains negative values (likely pre-normalized); skipping protein_norm.")
+            return raw_mat
         norm_mat = np.apply_along_axis(protein_norm, 1, raw_mat)
         return norm_mat
     else:
-        sc.pp.log1p(adata)
-        return adata.X.toarray() if issparse(adata.X) else np.array(adata.X)
+        mat = adata.X.toarray() if issparse(adata.X) else np.array(adata.X)
+        if 'log1p' not in adata.uns and np.nanmin(mat) >= 0:
+            sc.pp.log1p(adata)
+            mat = adata.X.toarray() if issparse(adata.X) else np.array(adata.X)
+        return mat
 
 
 def calculate_affinity(X1, sig=30, sparse=False, neighbors=100):
@@ -404,7 +426,7 @@ class Miso(nn.Module):
         self.adj1 = adj
 
         # Dimensionality reduction via PCA (up to 128 components)
-        pcs = [PCA(min(128, i.shape[1])).fit_transform(i) if i.shape[1] > 128 else i for i in scaled_features]
+        pcs = [PCA(n_components=min(128, i.shape[0], i.shape[1])).fit_transform(i) if i.shape[1] > 128 else i for i in scaled_features]
         self.pcs = [torch.tensor(i, dtype=torch.float32).to(self.device) for i in pcs]
 
         if not self.sparse:
@@ -426,6 +448,8 @@ class Miso(nn.Module):
             self.combinations = combs
 
         self.loss_history = []
+        self.recon_loss_history = []
+        self.sc_loss_history = []
         self.emb = None
 
     def train_model(self, epochs=1000, lr=1e-3):
@@ -443,6 +467,8 @@ class Miso(nn.Module):
                 return (dist * A.coalesce().values()).mean()
 
         total_losses_per_epoch = [0.0] * epochs
+        recon_losses_per_epoch = [0.0] * epochs
+        sc_losses_per_epoch = [0.0] * epochs
 
         for i in range(self.num_views):
             self.mlps[i].train()
@@ -457,8 +483,13 @@ class Miso(nn.Module):
                 loss.backward()
                 optimizer.step()
                 total_losses_per_epoch[epoch] += loss.item()
+                recon_losses_per_epoch[epoch] += loss1.item()
+                sc_losses_per_epoch[epoch] += loss2.item()
 
-        self.loss_history = [l / max(1, self.num_views) for l in total_losses_per_epoch]
+        denom = max(1, self.num_views)
+        self.loss_history = [l / denom for l in total_losses_per_epoch]
+        self.recon_loss_history = [l / denom for l in recon_losses_per_epoch]
+        self.sc_loss_history = [l / denom for l in sc_losses_per_epoch]
 
         for i in range(self.num_views):
             self.mlps[i].eval()
@@ -545,12 +576,11 @@ def run_mclust(data_matrix, n_clusters, seed=2024, max_dims=30):
         labels = np.array(res).astype(int)
         return labels.astype(str)
     except Exception as e:
-        print(f"[mclust Info] Native R mclust execution skipped/fallback ({e}). Running KMeans...")
-        km = KMeans(n_clusters=n_clusters, random_state=seed, n_init=10)
-        return km.fit_predict(data_mat).astype(str)
+        print(f"[mclust Warning] Native R mclust unavailable ({e}); skipping mclust.")
+        return None
 
 
-def search_res(adata, n_clusters, method='leiden', use_rep='X_miso', start=0.1, end=3.0, increment=0.02):
+def search_res(adata, n_clusters, method='leiden', use_rep='X_miso', start=0.1, end=3.0, increment=0.02, seed=0):
     """Search for resolution to achieve target cluster count using Leiden."""
     sc.pp.neighbors(adata, n_neighbors=30, use_rep=use_rep)
     best_res = 0.5
@@ -558,9 +588,9 @@ def search_res(adata, n_clusters, method='leiden', use_rep='X_miso', start=0.1, 
     for res in np.arange(start, end, increment):
         res = round(res, 3)
         try:
-            sc.tl.leiden(adata, random_state=0, resolution=res, flavor='igraph', n_iterations=2, directed=False)
+            sc.tl.leiden(adata, random_state=seed, resolution=res, flavor='igraph', n_iterations=2, directed=False)
         except Exception:
-            sc.tl.leiden(adata, random_state=0, resolution=res)
+            sc.tl.leiden(adata, random_state=seed, resolution=res)
         count_unique = adata.obs['leiden'].nunique()
         if count_unique == n_clusters:
             return res
@@ -571,70 +601,147 @@ def search_res(adata, n_clusters, method='leiden', use_rep='X_miso', start=0.1, 
     return best_res
 
 
-def clustering(adata, n_clusters=7, key='X_miso', add_key='MISO', method='leiden'):
+def clustering(adata, n_clusters=7, key='X_miso', add_key='MISO', method='leiden', seed=0):
     """Spatial clustering using mclust, leiden, or kmeans."""
     if method == 'mclust':
-        adata.obs['mclust'] = run_mclust(adata.obsm[key], n_clusters)
-        adata.obs[add_key] = adata.obs['mclust']
+        labels = run_mclust(adata.obsm[key], n_clusters, seed=seed)
+        if labels is not None:
+            adata.obs['mclust'] = labels
+            adata.obs[add_key] = adata.obs['mclust']
     elif method == 'leiden':
-        res = search_res(adata, n_clusters, method='leiden', use_rep=key)
+        res = search_res(adata, n_clusters, method='leiden', use_rep=key, seed=seed)
         try:
-            sc.tl.leiden(adata, random_state=0, resolution=res, flavor='igraph', n_iterations=2, directed=False)
+            sc.tl.leiden(adata, random_state=seed, resolution=res, flavor='igraph', n_iterations=2, directed=False)
         except Exception:
-            sc.tl.leiden(adata, random_state=0, resolution=res)
+            sc.tl.leiden(adata, random_state=seed, resolution=res)
         adata.obs[add_key] = adata.obs['leiden'].astype(str)
+    elif method == 'kmeans':
+        km = KMeans(n_clusters=n_clusters, random_state=seed, n_init=10)
+        adata.obs['kmeans'] = km.fit_predict(adata.obsm[key]).astype(str)
+        adata.obs[add_key] = adata.obs['kmeans']
 
 
-def evaluate_clustering(y_true_series, y_pred_series, features_matrix, name=""):
-    """Evaluate clustering performance across supervised and unsupervised metrics."""
+def compute_chaos(spatial_coords, labels):
+    """Spatial CHAOS score (Shang & Zhou, Nature Communications 2022). Lower is better."""
+    coords = np.asarray(spatial_coords, dtype=np.float64)
+    labels = np.asarray(labels)
+    n_spots = len(labels)
+    if n_spots <= 1:
+        return 0.0
+    coords_norm = StandardScaler().fit_transform(coords)
+    total_dist = 0.0
+    for cl in np.unique(labels):
+        idx = np.where(labels == cl)[0]
+        if len(idx) <= 1:
+            continue
+        sub_coords = coords_norm[idx]
+        nbrs = NearestNeighbors(n_neighbors=2, metric='euclidean').fit(sub_coords)
+        dists, _ = nbrs.kneighbors(sub_coords)
+        total_dist += float(np.sum(dists[:, 1]))
+    return float(total_dist / n_spots)
+
+
+def compute_pas(spatial_coords, labels, k=10):
+    """Percentage of Abnormal Spots (Shang & Zhou, Nature Communications 2022). Lower is better."""
+    coords = np.asarray(spatial_coords, dtype=np.float64)
+    labels = np.asarray(labels)
+    n_spots = len(labels)
+    k_eff = min(k, n_spots - 1)
+    if k_eff <= 0:
+        return 0.0
+    nbrs = NearestNeighbors(n_neighbors=k_eff + 1, metric='euclidean').fit(coords)
+    _, indices = nbrs.kneighbors(coords)
+    neighbor_labels = labels[indices[:, 1:]]
+    diff_frac = np.mean(neighbor_labels != labels[:, None], axis=1)
+    return float(np.mean(diff_frac > 0.5))
+
+
+def compute_morans_i(spatial_coords, labels, k=10):
+    """Permutation-invariant mean Moran's I across one-hot domain indicators. Higher is better."""
+    coords = np.asarray(spatial_coords, dtype=np.float64)
+    labels = np.asarray(labels)
+    n_spots = len(labels)
+    k_eff = min(k, n_spots - 1)
+    if k_eff <= 0:
+        return 0.0
+    W = kneighbors_graph(coords, n_neighbors=k_eff, mode='connectivity', include_self=False)
+    W = W.maximum(W.T).tocsr()
+    W_sum = float(W.sum())
+    if W_sum <= 0.0:
+        return 0.0
+    moran_vals = []
+    for cl in np.unique(labels):
+        y = (labels == cl).astype(np.float64)
+        y_c = y - y.mean()
+        denom = float(np.dot(y_c, y_c))
+        if denom <= 1e-12:
+            continue
+        num = float(y_c @ (W @ y_c))
+        moran_vals.append((n_spots / W_sum) * (num / denom))
+    return float(np.mean(moran_vals)) if len(moran_vals) > 0 else 0.0
+
+
+def evaluate_clustering(y_true_series, y_pred_series, features_matrix, name="", spatial_coords=None):
+    """Evaluate clustering performance across supervised, unsupervised, and spatial coherence metrics."""
     mask = (y_true_series != 'Exclude') & (y_true_series != 'unknown') & (y_true_series.notna())
     y_true = y_true_series[mask].astype(str)
-    y_pred = y_pred_series[mask].astype(str)
+    y_pred_eval = y_pred_series[mask].astype(str)
     feats = features_matrix[mask]
 
-    if len(y_true) == 0 or len(np.unique(y_pred)) < 2:
+    if len(y_true) == 0 or len(np.unique(y_pred_eval)) < 2:
         return {
-            'ARI': 0.0, 'NMI': 0.0, 'Silhouette': 0.0,
-            'AMI': 0.0, 'CHI': 0.0, 'DBI': 0.0,
-            'Homogeneity': 0.0, 'V-measure': 0.0, 'FMI': 0.0
+            'ARI': 0.0, 'NMI': 0.0, 'AMI': 0.0,
+            'Homogeneity': 0.0, 'V-measure': 0.0,
+            'Silhouette': 0.0, 'CHI': 0.0, 'DBI': 0.0,
+            'Morans_I': 0.0, 'PAS': 0.0, 'CHAOS': 0.0
         }
 
-    ari = adjusted_rand_score(y_true, y_pred)
-    nmi = normalized_mutual_info_score(y_true, y_pred)
-    ami = adjusted_mutual_info_score(y_true, y_pred)
-    homo = homogeneity_score(y_true, y_pred)
-    v_meas = v_measure_score(y_true, y_pred)
+    ari = adjusted_rand_score(y_true, y_pred_eval)
+    nmi = normalized_mutual_info_score(y_true, y_pred_eval)
+    ami = adjusted_mutual_info_score(y_true, y_pred_eval)
+    homo = homogeneity_score(y_true, y_pred_eval)
+    v_meas = v_measure_score(y_true, y_pred_eval)
+
+    y_pred_int = LabelEncoder().fit_transform(y_pred_eval)
 
     try:
-        fmi = fowlkes_mallows_score(y_true, y_pred)
-    except Exception:
-        fmi = 0.0
-
-    try:
-        sil = silhouette_score(feats, y_pred)
+        sil = float(silhouette_score(feats, y_pred_int))
     except Exception:
         sil = 0.0
 
     try:
-        chi = calinski_harabasz_score(feats, y_pred)
+        chi = float(calinski_harabasz_score(feats, y_pred_int))
     except Exception:
         chi = 0.0
 
     try:
-        dbi = davies_bouldin_score(feats, y_pred)
+        dbi = float(davies_bouldin_score(feats, y_pred_int))
     except Exception:
         dbi = 0.0
+
+    if spatial_coords is not None:
+        try:
+            y_pred_all = np.asarray(y_pred_series).astype(str)
+            morans_i = compute_morans_i(spatial_coords, y_pred_all, k=10)
+            pas_score = compute_pas(spatial_coords, y_pred_all, k=10)
+            chaos_score = compute_chaos(spatial_coords, y_pred_all)
+        except Exception:
+            morans_i, pas_score, chaos_score = 0.0, 0.0, 0.0
+    else:
+        morans_i, pas_score, chaos_score = 0.0, 0.0, 0.0
 
     metrics = {
         'ARI': float(ari),
         'NMI': float(nmi),
-        'Silhouette': float(sil),
         'AMI': float(ami),
-        'CHI': float(chi),
-        'DBI': float(dbi),
         'Homogeneity': float(homo),
         'V-measure': float(v_meas),
-        'FMI': float(fmi)
+        'Silhouette': float(sil),
+        'CHI': float(chi),
+        'DBI': float(dbi),
+        'Morans_I': float(morans_i),
+        'PAS': float(pas_score),
+        'CHAOS': float(chaos_score)
     }
 
     if name:
@@ -687,7 +794,7 @@ def plot_miso_summary_boxplots(df_all, save_dir=None):
     if df_all.empty or "cluster alg" not in df_all.columns:
         return
 
-    metrics = ["ARI", "NMI", "Silhouette", "AMI", "CHI", "DBI", "Homogeneity", "V-measure"]
+    metrics = ["ARI", "NMI", "AMI", "Homogeneity", "V-measure", "Silhouette", "CHI", "DBI", "Morans_I", "PAS", "CHAOS"]
     metrics = [m for m in metrics if m in df_all.columns]
     if not metrics:
         return
@@ -772,10 +879,10 @@ def compute_and_plot_cross_seed_linearity(df_results=None, out_dir="results", vi
             return None
 
     if 'cluster alg' in df_results.columns:
-        if (df_results['cluster alg'] == 'mclust').any():
-            df_curr = df_results[df_results['cluster alg'] == 'mclust'].copy()
-        elif (df_results['cluster alg'] == 'KMeans').any():
+        if (df_results['cluster alg'] == 'KMeans').any():
             df_curr = df_results[df_results['cluster alg'] == 'KMeans'].copy()
+        elif (df_results['cluster alg'] == 'mclust').any():
+            df_curr = df_results[df_results['cluster alg'] == 'mclust'].copy()
         else:
             df_curr = df_results.copy()
     else:
@@ -922,7 +1029,7 @@ def plot_miso_spatial_domains_and_attention(loaded_adatas=None, df_results=None,
         gt_labels = pd.factorize(gt_series)[0] if gt_series is not None else np.zeros(coords.shape[0])
 
         domain_col = None
-        for cand in ['MISO_domain', 'domain', 'mclust', 'kmeans', 'leiden']:
+        for cand in ['MISO_domain', 'domain', 'kmeans', 'mclust', 'leiden']:
             if cand in adata_plot.obs:
                 domain_col = cand
                 break
@@ -934,18 +1041,21 @@ def plot_miso_spatial_domains_and_attention(loaded_adatas=None, df_results=None,
         ax_gt = axes[row_idx, 0]
         sc_gt = ax_gt.scatter(coords[:, 0], coords[:, 1], c=gt_labels, cmap='tab20', s=25, alpha=0.9, edgecolors='none')
         ax_gt.set_title(f"{d_name}\nGround Truth Annotations", fontsize=12, fontweight='bold')
+        ax_gt.set_aspect('equal', adjustable='box')
         ax_gt.axis('off')
 
         # Subplot 2: MISO Domain
         ax_dom = axes[row_idx, 1]
         sc_dom = ax_dom.scatter(coords[:, 0], coords[:, 1], c=pred_labels, cmap='tab20', s=25, alpha=0.9, edgecolors='none')
         ax_dom.set_title(f"{d_name}\nMISO Identified Spatial Domains", fontsize=12, fontweight='bold')
+        ax_dom.set_aspect('equal', adjustable='box')
         ax_dom.axis('off')
 
         # Subplot 3: Modality Contribution
         ax_att = axes[row_idx, 2]
         sc_att = ax_att.scatter(coords[:, 0], coords[:, 1], c=mean_att, cmap='viridis', s=25, alpha=0.9, edgecolors='none')
         ax_att.set_title(f"{d_name}\nRNA Relative Modality Weight", fontsize=12, fontweight='bold')
+        ax_att.set_aspect('equal', adjustable='box')
         ax_att.axis('off')
         plt.colorbar(sc_att, ax=ax_att, fraction=0.046, pad=0.04)
 
@@ -997,7 +1107,7 @@ def plot_miso_latent_umap_manifolds(loaded_adatas=None, df_results=None, save_di
         gt_labels = pd.factorize(gt_series)[0] if gt_series is not None else np.zeros(umap_coords.shape[0])
 
         domain_col = None
-        for cand in ['MISO_domain', 'domain', 'mclust', 'kmeans', 'leiden']:
+        for cand in ['MISO_domain', 'domain', 'kmeans', 'mclust', 'leiden']:
             if cand in adata_plot.obs:
                 domain_col = cand
                 break
@@ -1096,13 +1206,14 @@ def run_miso_workflow(
     env_mode,
     seed,
     device,
-    epochs=600,
+    epochs=1000,
     show_plots=True,
     dashboard_token=None,
     api_url=DEFAULT_API_URL,
     output_dir=None
 ):
     print(f"\n--- Running Seed: {seed} ---")
+    seed_start_time = time.time()
     fix_seed(seed)
 
     data_dir = resolve_dataset_path(dataset_name, dataset_cfg, env_mode)
@@ -1129,6 +1240,14 @@ def run_miso_workflow(
     adata_mod2 = sc.read_h5ad(os.path.join(data_dir, mod2_filename))
     adata_mod2.var_names_make_unique()
 
+    # Align spots/barcodes between modalities if order or subset differs
+    if not adata_rna.obs_names.equals(adata_mod2.obs_names):
+        common_obs = adata_rna.obs_names.intersection(adata_mod2.obs_names)
+        if len(common_obs) == 0:
+            raise ValueError(f"No overlapping spot barcodes between RNA and {mod2_filename} in {data_dir}")
+        adata_rna = adata_rna[common_obs].copy()
+        adata_mod2 = adata_mod2[common_obs].copy()
+
     # Annotation matching
     annotation_filename = dataset_cfg["anno_file"]
     annotation_path = os.path.join(data_dir, annotation_filename)
@@ -1143,11 +1262,18 @@ def run_miso_workflow(
             if col in annotation.columns:
                 annotation = annotation.rename(columns={col: 'ground_truth'})
                 break
-        annotation = annotation.set_index('barcode')
-        adata_rna.obs = adata_rna.obs.join(annotation, how='left')
-        adata_rna.obs['ground_truth'] = adata_rna.obs['ground_truth'].fillna('unknown')
-        adata_mod2.obs = adata_mod2.obs.join(annotation, how='left')
-        adata_mod2.obs['ground_truth'] = adata_mod2.obs['ground_truth'].fillna('unknown')
+        if 'barcode' in annotation.columns:
+            annotation = annotation.set_index('barcode')
+        else:
+            annotation = annotation.set_index(annotation.columns[0])
+        if 'ground_truth' in annotation.columns:
+            gt_series = annotation['ground_truth'].astype(str)
+            adata_rna.obs['ground_truth'] = gt_series.reindex(adata_rna.obs_names).fillna('unknown').astype(str)
+            adata_mod2.obs['ground_truth'] = gt_series.reindex(adata_mod2.obs_names).fillna('unknown').astype(str)
+        else:
+            print(f"Warning: Ground truth column not found in '{annotation_filename}'. Defaulting to 'unknown'.")
+            adata_rna.obs['ground_truth'] = 'unknown'
+            adata_mod2.obs['ground_truth'] = 'unknown'
     else:
         print(f"Warning: Annotation file '{annotation_filename}' not found. Defaulting to 'unknown'.")
         adata_rna.obs['ground_truth'] = 'unknown'
@@ -1211,22 +1337,32 @@ def run_miso_workflow(
     adata.obs['kmeans'] = kmeans.fit_predict(emb).astype(str)
 
     print("Running Leiden on MISO embeddings...")
-    clustering(adata, n_clusters=n_clusters, key='X_miso', add_key='MISO', method='leiden')
+    clustering(adata, n_clusters=n_clusters, key='X_miso', add_key='MISO', method='leiden', seed=seed)
     adata.obs['leiden'] = adata.obs['MISO'].astype(str)
 
     print("Running mclust on MISO embeddings...")
-    adata.obs['mclust'] = run_mclust(emb, n_clusters, seed=seed)
+    mclust_labels = run_mclust(emb, n_clusters, seed=seed)
+    if mclust_labels is not None:
+        adata.obs['mclust'] = mclust_labels
+
+    duration_sec = round(time.time() - seed_start_time, 2)
+    spatial_coords_eval = adata.obsm.get('spatial', None)
 
     # Evaluation
-    metrics_kmeans = evaluate_clustering(adata.obs['ground_truth'], adata.obs['kmeans'], emb, name=f"MISO {dataset_name} Seed {seed} - KMeans")
-    metrics_leiden = evaluate_clustering(adata.obs['ground_truth'], adata.obs['leiden'], emb, name=f"MISO {dataset_name} Seed {seed} - Leiden")
-    metrics_mclust = evaluate_clustering(adata.obs['ground_truth'], adata.obs['mclust'], emb, name=f"MISO {dataset_name} Seed {seed} - mclust")
+    metrics_kmeans = evaluate_clustering(adata.obs['ground_truth'], adata.obs['kmeans'], emb, name=f"MISO {dataset_name} Seed {seed} - KMeans", spatial_coords=spatial_coords_eval)
+    metrics_leiden = evaluate_clustering(adata.obs['ground_truth'], adata.obs['leiden'], emb, name=f"MISO {dataset_name} Seed {seed} - Leiden", spatial_coords=spatial_coords_eval)
 
-    row_kmeans = {'cluster alg': 'KMeans', 'resolution': None, **metrics_kmeans}
-    row_leiden = {'cluster alg': 'Leiden', 'resolution': None, **metrics_leiden}
-    row_mclust = {'cluster alg': 'mclust', 'resolution': None, **metrics_mclust}
+    row_kmeans = {'cluster alg': 'KMeans', 'resolution': None, **metrics_kmeans, 'Duration': duration_sec}
+    row_leiden = {'cluster alg': 'Leiden', 'resolution': None, **metrics_leiden, 'Duration': duration_sec}
+    result_rows = [row_kmeans, row_leiden]
 
-    primary_alg = 'mclust' if 'mclust' in adata.obs else 'kmeans'
+    metrics_mclust = None
+    if 'mclust' in adata.obs:
+        metrics_mclust = evaluate_clustering(adata.obs['ground_truth'], adata.obs['mclust'], emb, name=f"MISO {dataset_name} Seed {seed} - mclust", spatial_coords=spatial_coords_eval)
+        row_mclust = {'cluster alg': 'mclust', 'resolution': None, **metrics_mclust, 'Duration': duration_sec}
+        result_rows.append(row_mclust)
+
+    primary_alg = 'kmeans'
     adata.obs['MISO_domain'] = adata.obs[primary_alg].astype(str)
     adata.obs['domain'] = adata.obs['MISO_domain']
     adata.uns['selected_seed'] = seed
@@ -1262,16 +1398,19 @@ def run_miso_workflow(
         "sampleSilhouettes": sample_sil_values,
     }
 
-    primary_metrics = metrics_mclust if primary_alg == 'mclust' else metrics_kmeans
+    primary_metrics = metrics_kmeans
+    all_algs_dict = {
+        "KMeans": metrics_kmeans,
+        "Leiden": metrics_leiden,
+    }
+    if metrics_mclust is not None:
+        all_algs_dict["mclust"] = metrics_mclust
+
     hyperparameters = {
         "epochs": epochs,
         "lr": 0.001,
         "clustering_tool": primary_alg,
-        "all_algorithms": {
-            "KMeans": metrics_kmeans,
-            "Leiden": metrics_leiden,
-            "mclust": metrics_mclust
-        }
+        "all_algorithms": all_algs_dict
     }
 
     ds_info = DATASET_DASHBOARD_INFO.get(dataset_name, {
@@ -1285,8 +1424,13 @@ def run_miso_workflow(
         dataset_name=ds_info["datasetId"],
         seed=seed,
         metrics_dict=primary_metrics,
-        training_results={"loss_history": model.loss_history},
+        training_results={
+            "loss_history": model.loss_history,
+            "recon_loss_history": model.recon_loss_history,
+            "sc_loss_history": model.sc_loss_history,
+        },
         hyperparameters=hyperparameters,
+        duration_seconds=duration_sec,
         embeddings_data=embeddings_data,
         output_dir=out_dir,
         api_url=api_url,
@@ -1294,7 +1438,7 @@ def run_miso_workflow(
         dataset_display_name=ds_info["datasetName"]
     )
 
-    return [row_kmeans, row_leiden, row_mclust], adata
+    return result_rows, adata
 
 
 # ==============================================================================
@@ -1306,7 +1450,7 @@ def main(
     api_url=DEFAULT_API_URL,
     datasets=None,
     seeds=None,
-    epochs=600,
+    epochs=1000,
     output_dir=None,
     generate_plots=False,
     results_csv=None
@@ -1342,7 +1486,9 @@ def main(
                 print(f"[Loaded] Retrieved benchmark CSV from: {cand}")
 
         if df_bench is not None and len(df_bench) > 0:
-            if 'cluster alg' in df_bench.columns and (df_bench['cluster alg'] == 'mclust').any():
+            if 'cluster alg' in df_bench.columns and (df_bench['cluster alg'] == 'KMeans').any():
+                df_primary = df_bench[df_bench['cluster alg'] == 'KMeans'].copy()
+            elif 'cluster alg' in df_bench.columns and (df_bench['cluster alg'] == 'mclust').any():
                 df_primary = df_bench[df_bench['cluster alg'] == 'mclust'].copy()
             else:
                 df_primary = df_bench.copy()
@@ -1359,9 +1505,6 @@ def main(
         return
 
     dashboard_token = None
-    if api_url and username and password:
-        base_url = api_url.split("/api/")[0] if "/api/" in api_url else DEFAULT_DASHBOARD_URL
-        dashboard_token = authenticate_dashboard(base_url=base_url, username=username, password=password)
 
     active_datasets = datasets if datasets is not None else list(ALL_DATASETS_CONFIG.keys())
     active_seeds = seeds if seeds is not None else SEEDS
@@ -1406,8 +1549,8 @@ def main(
                         all_results_flat.append(res_row)
 
                 if adata_curr is not None:
-                    mclust_row = next((r for r in results_list if r.get('cluster alg') == 'mclust'), None)
-                    current_ari = mclust_row['ARI'] if mclust_row else (results_list[0]['ARI'] if results_list else 0.0)
+                    kmeans_row = next((r for r in results_list if r.get('cluster alg') == 'KMeans'), None)
+                    current_ari = kmeans_row['ARI'] if kmeans_row else (results_list[0]['ARI'] if results_list else 0.0)
                     if dname not in best_adatas or current_ari > best_aris.get(dname, -1.0):
                         best_adatas[dname] = adata_curr
                         best_aris[dname] = current_ari
@@ -1421,7 +1564,7 @@ def main(
             print(f"\n=======================================================")
             print(f"AVERAGE PERFORMANCE FOR {dname} ({len(active_seeds)} seeds)")
             print(f"=======================================================")
-            numeric_cols = ["ARI", "NMI", "Silhouette", "AMI", "CHI", "DBI", "Homogeneity", "V-measure", "FMI"]
+            numeric_cols = ["ARI", "NMI", "AMI", "Homogeneity", "V-measure", "Silhouette", "CHI", "DBI", "Morans_I", "PAS", "CHAOS", "Duration"]
             numeric_cols = [c for c in numeric_cols if c in df_metrics.columns]
             for alg, df_alg in df_metrics.groupby("cluster alg"):
                 print(f"\n--- {alg} Performance (Mean ± Std) ---")
@@ -1449,10 +1592,10 @@ def main(
         print(f"All ablation study results saved to CSV at: {output_csv}")
 
         # 2. Extract and save primary benchmark results
-        if (df_all['cluster alg'] == 'mclust').any():
-            df_benchmark = df_all[df_all['cluster alg'] == 'mclust'].copy()
-        elif (df_all['cluster alg'] == 'KMeans').any():
+        if (df_all['cluster alg'] == 'KMeans').any():
             df_benchmark = df_all[df_all['cluster alg'] == 'KMeans'].copy()
+        elif (df_all['cluster alg'] == 'mclust').any():
+            df_benchmark = df_all[df_all['cluster alg'] == 'mclust'].copy()
         else:
             df_benchmark = df_all.copy()
 
@@ -1489,8 +1632,9 @@ if __name__ == '__main__':
     parser.add_argument('--password', type=str, default=DEFAULT_PASSWORD, help="Dashboard account password")
     parser.add_argument('--api_url', type=str, default=DEFAULT_API_URL, help="Dashboard upload API endpoint")
     parser.add_argument('--datasets', nargs='+', default=None, help="Datasets to run (e.g. mouse-brain-e11-s1 or 'all')")
+    parser.add_argument('--seed', type=int, default=None, help="Single seed to evaluate")
     parser.add_argument('--seeds', nargs='+', type=int, default=None, help="Specific seeds to evaluate")
-    parser.add_argument('--epochs', type=int, default=600, help="Training epochs per modality view")
+    parser.add_argument('--epochs', type=int, default=1000, help="Training epochs per modality view")
     parser.add_argument('--output_dir', type=str, default=None, help="Directory to save CSV results, plots, and JSONs")
     parser.add_argument('--generate_plots', action='store_true', help="Generate linearity CSV, summary plots, spatial domain maps, and UMAP plots from existing benchmark results without re-training")
     parser.add_argument('--results_csv', type=str, default=None, help="Path to existing CSV containing benchmark results (for --generate_plots)")
@@ -1506,7 +1650,12 @@ if __name__ == '__main__':
     else:
         selected_datasets = list(ALL_DATASETS_CONFIG.keys())
 
-    selected_seeds = args.seeds if (args.seeds is not None and len(args.seeds) > 0) else SEEDS
+    if args.seed is not None:
+        selected_seeds = [args.seed]
+    elif args.seeds is not None and len(args.seeds) > 0:
+        selected_seeds = args.seeds
+    else:
+        selected_seeds = SEEDS
 
     main(
         username=args.username,

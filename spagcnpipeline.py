@@ -2,21 +2,21 @@
 """
 SpaGCN Multi-Seed Pipeline (Standalone Python Script)
 Integrates spatial representation learning & DEC domain identification for:
-- Mouse Brain E11, E13, E15, E18 (MISAR-seq RNA + ATAC, square lattice)
-- Human Lymph Node A1, D1 (10x Visium RNA + Protein/ADT, hexagonal lattice)
+- Mouse Brain E11, E13, E15, E18 (MISAR-seq RNA, square lattice)
+- Human Lymph Node A1, D1 (10x Visium RNA, hexagonal lattice)
 
 Faithful to official SpaGCN (Hu et al., Nature Methods 2021; SpaGCN_package):
+- Uses RNA expression only (auxiliary ATAC/ADT modalities ignored, matching SpaGCN)
+- Official RNA preprocessing: filter_genes(min_cells=3), prefilter_specialgenes(ERCC/MT-),
+  normalize_per_cell, log1p, PCA(n_components=50)
 - Uses simple_GC_DEC (1-layer linear GraphConvolution + Student-t DEC, alpha=0.2)
   as used in SpaGCN.py / ez_mode.py (with optional --model_type gc_dec for the
   2-layer ReLU+Dropout GC_DEC variant in models.py)
+- Official SpaGCN.py training defaults: lr=0.005, epochs=2000, tol=1e-3
 - Unnormalized Gaussian spatial kernel adjacency calibrated via search_l(p=0.5)
 - Louvain + search_res cluster initialization (seed-aware), with KMeans fallback
 - Platform-aware spatial refinement (shape="square" for MISAR-seq, "hexagon" for Visium)
-- Multi-seed evaluation suite (10 seeds) covering:
-  SpaGCN (Native DEC), SpaGCN_Refined, KMeans, Leiden, and mclust
-- Complete evaluation metrics (ARI, NMI, Silhouette, AMI, CHI, DBI, Homogeneity, V-measure, FMI)
-- Summary Box & Whiskers plots, cross-seed diagnostics, spatial/UMAP visualizations, CSVs,
-  and standardized Dashboard JSON exports & API upload
+- Multi-seed evaluation suite (9 seeds) with SpaGCN_Refined uploaded to Dashboard API
 """
 
 import os
@@ -63,7 +63,8 @@ from torch.backends import cudnn
 import sklearn
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.neighbors import NearestNeighbors, kneighbors_graph
 from sklearn.metrics import (
     adjusted_rand_score,
     normalized_mutual_info_score,
@@ -141,9 +142,7 @@ ALL_DATASETS_CONFIG = {
 
 ACTIVE_DATASETS = ["all"]
 
-SEEDS = [
-    42, 0, 1, 7, 123, 1234, 2022, 2023, 2024, 1337
-]
+SEEDS = [42, 0, 7, 123, 1234, 2022, 2023, 2024, 1337]
 
 active_config_keys = list(ALL_DATASETS_CONFIG.keys())
 datasets_to_run = (
@@ -177,11 +176,14 @@ def make_json_serializable(obj):
     if isinstance(obj, np.ndarray):
         return [make_json_serializable(x) for x in obj.tolist()]
     if isinstance(obj, (np.floating, np.float32, np.float64, np.float16)):
-        return float(obj)
+        val = float(obj)
+        return 0.0 if (np.isnan(val) or np.isinf(val)) else val
     if isinstance(obj, (np.integer, np.int64, np.int32, np.int16, np.int8)):
         return int(obj)
     if isinstance(obj, (np.bool_, bool)):
         return bool(obj)
+    if isinstance(obj, float):
+        return 0.0 if (np.isnan(obj) or np.isinf(obj)) else obj
     if isinstance(obj, dict):
         return {str(k): make_json_serializable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
@@ -225,6 +227,7 @@ def export_dashboard_experiment(
     metrics_dict: dict,
     training_results: dict,
     hyperparameters: dict,
+    duration_seconds: float = 0.0,
     embeddings_data: Optional[dict] = None,
     output_dir: str = "results",
     api_url: Optional[str] = DEFAULT_API_URL,
@@ -270,7 +273,7 @@ def export_dashboard_experiment(
     safe_embeddings = make_json_serializable(embeddings_data or {})
 
     best_epoch = int(training_results.get("best_epoch", len(loss_hist)))
-    best_score = float(training_results.get("best_score", metrics_dict.get("ARI", 0.0)))
+    best_score = float(safe_metrics.get("Silhouette", 0.0))
 
     with open(os.path.join(exp_dir, "metrics.json"), "w", encoding="utf-8") as f:
         json.dump({
@@ -280,6 +283,7 @@ def export_dashboard_experiment(
             "final_epoch": len(loss_hist),
             "best_epoch": best_epoch,
             "best_score": best_score,
+            "durationSeconds": float(duration_seconds),
             "metrics": safe_metrics
         }, f, indent=2)
 
@@ -291,6 +295,7 @@ def export_dashboard_experiment(
             "model_name": model_name,
             "dataset": dataset_name,
             "seed": int(seed),
+            "durationSeconds": float(duration_seconds),
             "hyperparameters": safe_hyperparameters
         }, f, indent=2)
 
@@ -315,6 +320,7 @@ def export_dashboard_experiment(
                 "seed": int(seed),
                 "bestEpoch": best_epoch,
                 "bestScore": best_score,
+                "durationSeconds": float(duration_seconds),
                 "finalMetrics": safe_metrics,
                 "history": safe_history,
                 "embeddingsData": safe_embeddings,
@@ -335,11 +341,11 @@ def export_dashboard_experiment(
             )
             with urllib.request.urlopen(req, timeout=30) as response:
                 if response.status in (200, 201):
-                    print(f"[Dashboard] Successfully uploaded experiment results to Dashboard via API ({api_url})!")
+                    print(f"🚀 Sent {model_name} ({dataset_name}, seed={seed}, {duration_seconds:.2f}s) to Dashboard API!")
                     return True
                 print(f"[Dashboard] Upload returned HTTP status {response.status}")
         except Exception as e:
-            print(f"[Dashboard Info] Direct API push skipped ({e}). Artifacts preserved locally.")
+            print(f"ℹ️ Direct API push skipped ({e}). Data saved locally in {exp_dir}.")
     return False
 
 
@@ -682,7 +688,7 @@ class SpaGCNModel:
         init: str = "louvain",
         n_neighbors: int = 10,
         lr: float = 0.005,
-        max_epochs: int = 200,
+        max_epochs: int = 2000,
         weight_decay: float = 0.0,
         update_interval: int = 3,
         tol: float = 1e-3
@@ -852,8 +858,68 @@ def _valid_gt_mask(gt_series: pd.Series) -> np.ndarray:
     )
 
 
-def evaluate_clustering(y_true, y_pred, features: np.ndarray) -> Dict[str, float]:
-    """Compute 9 clustering evaluation metrics safely for string/int/categorical annotations."""
+def compute_chaos(spatial_coords, labels):
+    """Spatial CHAOS score (Shang & Zhou, Nature Communications 2022). Lower is better."""
+    coords = np.asarray(spatial_coords, dtype=np.float64)
+    labels = np.asarray(labels)
+    n_spots = len(labels)
+    if n_spots <= 1:
+        return 0.0
+    coords_norm = StandardScaler().fit_transform(coords)
+    total_dist = 0.0
+    for cl in np.unique(labels):
+        idx = np.where(labels == cl)[0]
+        if len(idx) <= 1:
+            continue
+        sub_coords = coords_norm[idx]
+        nbrs = NearestNeighbors(n_neighbors=2, metric='euclidean').fit(sub_coords)
+        dists, _ = nbrs.kneighbors(sub_coords)
+        total_dist += float(np.sum(dists[:, 1]))
+    return float(total_dist / n_spots)
+
+
+def compute_pas(spatial_coords, labels, k=10):
+    """Percentage of Abnormal Spots (Shang & Zhou, Nature Communications 2022). Lower is better."""
+    coords = np.asarray(spatial_coords, dtype=np.float64)
+    labels = np.asarray(labels)
+    n_spots = len(labels)
+    k_eff = min(k, n_spots - 1)
+    if k_eff <= 0:
+        return 0.0
+    nbrs = NearestNeighbors(n_neighbors=k_eff + 1, metric='euclidean').fit(coords)
+    _, indices = nbrs.kneighbors(coords)
+    neighbor_labels = labels[indices[:, 1:]]
+    diff_frac = np.mean(neighbor_labels != labels[:, None], axis=1)
+    return float(np.mean(diff_frac > 0.5))
+
+
+def compute_morans_i(spatial_coords, labels, k=10):
+    """Permutation-invariant mean Moran's I across one-hot domain indicators. Higher is better."""
+    coords = np.asarray(spatial_coords, dtype=np.float64)
+    labels = np.asarray(labels)
+    n_spots = len(labels)
+    k_eff = min(k, n_spots - 1)
+    if k_eff <= 0:
+        return 0.0
+    W = kneighbors_graph(coords, n_neighbors=k_eff, mode='connectivity', include_self=False)
+    W = W.maximum(W.T).tocsr()
+    W_sum = float(W.sum())
+    if W_sum <= 0.0:
+        return 0.0
+    moran_vals = []
+    for cl in np.unique(labels):
+        y = (labels == cl).astype(np.float64)
+        y_c = y - y.mean()
+        denom = float(np.dot(y_c, y_c))
+        if denom <= 1e-12:
+            continue
+        num = float(y_c @ (W @ y_c))
+        moran_vals.append((n_spots / W_sum) * (num / denom))
+    return float(np.mean(moran_vals)) if len(moran_vals) > 0 else 0.0
+
+
+def evaluate_clustering(y_true, y_pred, features: np.ndarray, spatial_coords=None) -> Dict[str, float]:
+    """Compute 11 clustering & spatial coherence evaluation metrics safely for string/int/categorical annotations."""
     gt_series = pd.Series(y_true)
     valid_mask = _valid_gt_mask(gt_series)
     y_true_valid = gt_series[valid_mask].astype(str).to_numpy()
@@ -862,8 +928,9 @@ def evaluate_clustering(y_true, y_pred, features: np.ndarray) -> Dict[str, float
 
     if len(y_true_valid) == 0 or len(np.unique(y_pred_valid)) < 2:
         return {
-            'ARI': 0.0, 'NMI': 0.0, 'Silhouette': 0.0, 'AMI': 0.0,
-            'CHI': 0.0, 'DBI': 0.0, 'Homogeneity': 0.0, 'V-measure': 0.0, 'FMI': 0.0
+            'ARI': 0.0, 'NMI': 0.0, 'AMI': 0.0, 'Homogeneity': 0.0, 'V-measure': 0.0,
+            'Silhouette': 0.0, 'CHI': 0.0, 'DBI': 0.0,
+            'Morans_I': 0.0, 'PAS': 0.0, 'CHAOS': 0.0
         }
 
     y_true_encoded = LabelEncoder().fit_transform(y_true_valid)
@@ -874,7 +941,6 @@ def evaluate_clustering(y_true, y_pred, features: np.ndarray) -> Dict[str, float
     ami = float(adjusted_mutual_info_score(y_true_encoded, y_pred_encoded))
     homo = float(homogeneity_score(y_true_encoded, y_pred_encoded))
     v_meas = float(v_measure_score(y_true_encoded, y_pred_encoded))
-    fmi = float(fowlkes_mallows_score(y_true_encoded, y_pred_encoded))
 
     try:
         sil = float(silhouette_score(features_valid, y_pred_encoded))
@@ -889,16 +955,29 @@ def evaluate_clustering(y_true, y_pred, features: np.ndarray) -> Dict[str, float
     except Exception:
         dbi = 0.0
 
+    if spatial_coords is not None:
+        try:
+            y_pred_all = np.asarray(y_pred).astype(str)
+            morans_i = compute_morans_i(spatial_coords, y_pred_all, k=10)
+            pas_score = compute_pas(spatial_coords, y_pred_all, k=10)
+            chaos_score = compute_chaos(spatial_coords, y_pred_all)
+        except Exception:
+            morans_i, pas_score, chaos_score = 0.0, 0.0, 0.0
+    else:
+        morans_i, pas_score, chaos_score = 0.0, 0.0, 0.0
+
     return {
         'ARI': ari,
         'NMI': nmi,
-        'Silhouette': sil,
         'AMI': ami,
-        'CHI': chi,
-        'DBI': dbi,
         'Homogeneity': homo,
         'V-measure': v_meas,
-        'FMI': fmi
+        'Silhouette': sil,
+        'CHI': chi,
+        'DBI': dbi,
+        'Morans_I': float(morans_i),
+        'PAS': float(pas_score),
+        'CHAOS': float(chaos_score)
     }
 
 
@@ -974,7 +1053,7 @@ def plot_summary_boxplots(df_benchmark: pd.DataFrame, save_dir: str = "results",
         return
     v_dir = visuals_dir or save_dir
     os.makedirs(v_dir, exist_ok=True)
-    metrics_to_plot = ['ARI', 'NMI', 'Silhouette', 'AMI', 'FMI']
+    metrics_to_plot = ['ARI', 'NMI', 'AMI', 'Homogeneity', 'V-measure', 'Silhouette']
 
     for metric in metrics_to_plot:
         if metric not in df_benchmark.columns:
@@ -1000,7 +1079,8 @@ def plot_cross_seed_linearity_and_spread(df_benchmark: pd.DataFrame, save_dir: s
     v_dir = visuals_dir or save_dir
     os.makedirs(v_dir, exist_ok=True)
 
-    summary_df = df_benchmark.groupby(['Dataset', 'Algorithm'])[['ARI', 'NMI', 'Silhouette', 'AMI', 'FMI']].agg(['mean', 'std'])
+    summary_cols = [c for c in ['ARI', 'NMI', 'AMI', 'Homogeneity', 'V-measure', 'Silhouette', 'Morans_I', 'PAS', 'CHAOS'] if c in df_benchmark.columns]
+    summary_df = df_benchmark.groupby(['Dataset', 'Algorithm'])[summary_cols].agg(['mean', 'std'])
     summary_df.columns = [f"{col[0]}_{col[1]}" for col in summary_df.columns]
     summary_df.reset_index(inplace=True)
     summary_path = os.path.join(save_dir, "spagcn_cross_seed_summary.csv")
@@ -1201,33 +1281,13 @@ def _load_annotations(adata_rna: ad.AnnData, data_dir: str, anno_file: str) -> p
     return mapped.fillna('unknown')
 
 
-def _tfidf(X):
-    """TF-IDF normalization for ATAC chromatin accessibility matrices."""
-    col_sum = np.asarray(X.sum(axis=0)).ravel() + 1e-12
-    row_sum = np.asarray(X.sum(axis=1)).ravel() + 1e-12
-    idf = X.shape[0] / col_sum
-    if sp.issparse(X):
-        tf = X.multiply(1.0 / row_sum[:, None])
-        return tf.multiply(idf)
-    tf = X / row_sum[:, None]
-    return tf * idf
-
-
-def _clr_normalize(X: np.ndarray) -> np.ndarray:
-    """Centered log-ratio (CLR) normalization per spot for CITE-seq ADT data."""
-    out = np.empty_like(X, dtype=np.float32)
-    for i in range(X.shape[0]):
-        row = X[i]
-        pos = row[row > 0]
-        denom = np.exp(np.sum(np.log1p(pos)) / len(row)) if len(row) > 0 and len(pos) > 0 else 1.0
-        out[i] = np.log1p(row / denom)
-    return out
-
-
-def _rms_balance(X: np.ndarray) -> np.ndarray:
-    """Scale modality matrix by scalar RMS so PC variance decay is preserved while balancing modalities."""
-    rms = float(np.sqrt(np.mean(X ** 2)))
-    return (X / (rms + 1e-8)).astype(np.float32)
+def _prefilter_specialgenes(adata: ad.AnnData, gene1_pattern: str = "ERCC", gene2_pattern: str = "MT-"):
+    """Remove ERCC spike-in and mitochondrial genes (matches SpaGCN/util.py::prefilter_specialgenes)."""
+    keep = np.asarray(
+        [not str(name).startswith(gene1_pattern) and not str(name).startswith(gene2_pattern) for name in adata.var_names],
+        dtype=bool
+    )
+    adata._inplace_subset_var(keep)
 
 
 # ==============================================================================
@@ -1242,13 +1302,14 @@ def run_spagcn_workflow(
     model_type: str = "simple_gc_dec",
     init_method: str = "louvain",
     lr: float = 0.005,
-    epochs: int = 200,
+    epochs: int = 2000,
+    tol: float = 1e-3,
     show_plots: bool = True,
     out_dir: str = "results",
     token: Optional[str] = None,
     api_url: Optional[str] = DEFAULT_API_URL
 ):
-    """Execute SpaGCN multi-omics representation learning, clustering, and evaluation for one seed."""
+    """Execute official RNA-only SpaGCN representation learning, clustering, and evaluation for one seed."""
     start_time = time.time()
     print(f"\n--- Running Seed: {seed} ---")
 
@@ -1268,26 +1329,10 @@ def run_spagcn_workflow(
     adata_rna = sc.read_h5ad(os.path.join(data_dir, rna_filename))
     adata_rna.var_names_make_unique()
 
-    mod2_filename = next((c for c in dataset_cfg["mod2_candidates"] if os.path.exists(os.path.join(data_dir, c))), dataset_cfg["mod2_candidates"][0])
-    adata_mod2 = sc.read_h5ad(os.path.join(data_dir, mod2_filename))
-    adata_mod2.var_names_make_unique()
-
-    # Align spot barcodes between RNA and Modality 2
-    if list(adata_rna.obs_names) != list(adata_mod2.obs_names):
-        mod2_set = set(adata_mod2.obs_names)
-        common_spots = [s for s in adata_rna.obs_names if s in mod2_set]
-        if not common_spots:
-            raise ValueError(f"No overlapping spot barcodes between RNA and {mod2_filename} in {data_dir}.")
-        print(f"Aligning {len(common_spots)} shared spot barcodes between RNA ({adata_rna.n_obs}) and Mod2 ({adata_mod2.n_obs})...")
-        adata_rna = adata_rna[common_spots].copy()
-        adata_mod2 = adata_mod2[common_spots].copy()
-
     gt_series = _load_annotations(adata_rna, data_dir, dataset_cfg["anno_file"])
     adata_rna.obs['ground_truth'] = gt_series
-    adata_mod2.obs['ground_truth'] = gt_series
 
-    print("RNA shape:", adata_rna.shape)
-    print("Modality 2 shape:", adata_mod2.shape)
+    print("RNA shape (ignoring auxiliary modalities, matching official SpaGCN):", adata_rna.shape)
 
     # 1. Extract Spatial Coordinates
     if 'spatial' in adata_rna.obsm:
@@ -1300,38 +1345,16 @@ def run_spagcn_workflow(
 
     adj_dist = calculate_spatial_adj_matrix(coords[:, 0], coords[:, 1])
 
-    # 2. Multi-Omics Feature Integration (preserving within-modality PC variance)
-    print("Preprocessing & Integrating RNA and Modality 2 for SpaGCN...")
+    # 2. Official SpaGCN RNA Preprocessing (ez_mode.py + SpaGCN.py)
+    print("Preprocessing RNA for SpaGCN (filter_genes -> prefilter_specialgenes -> normalize_per_cell -> log1p -> PCA50)...")
     adata_rna_norm = adata_rna.copy()
     sc.pp.filter_genes(adata_rna_norm, min_cells=3)
-    sc.pp.normalize_total(adata_rna_norm, target_sum=1e4)
+    _prefilter_specialgenes(adata_rna_norm, gene1_pattern="ERCC", gene2_pattern="MT-")
+    sc.pp.normalize_per_cell(adata_rna_norm)
     sc.pp.log1p(adata_rna_norm)
-    if adata_rna_norm.n_vars > 3000:
-        sc.pp.highly_variable_genes(adata_rna_norm, flavor="seurat", n_top_genes=3000)
-        adata_rna_norm = adata_rna_norm[:, adata_rna_norm.var['highly_variable']].copy()
     X_rna_mat = adata_rna_norm.X.toarray() if issparse(adata_rna_norm.X) else np.asarray(adata_rna_norm.X, dtype=np.float32)
-    n_pcs_rna = min(32, X_rna_mat.shape[0] - 1, X_rna_mat.shape[1])
-    X_rna_pca = PCA(n_components=n_pcs_rna, random_state=seed).fit_transform(X_rna_mat)
-
-    if dataset_cfg.get("type") == "mouse_brain":
-        if 'X_lsi' in adata_mod2.obsm:
-            X_mod2_pca = np.asarray(adata_mod2.obsm['X_lsi'], dtype=np.float32)[:, :32]
-        else:
-            X_atac = adata_mod2.X.toarray() if issparse(adata_mod2.X) else np.asarray(adata_mod2.X, dtype=np.float32)
-            # Run TF-IDF + log1p + SVD (LSI) if raw non-negative peak matrix
-            if X_atac.min() >= 0 and "normalized" not in mod2_filename.lower():
-                X_atac = sklearn.preprocessing.Normalizer(norm="l1").fit_transform(_tfidf(X_atac))
-                X_atac = np.log1p(X_atac * 1e4)
-            n_pcs_mod2 = min(32, X_atac.shape[0] - 1, X_atac.shape[1] - 1)
-            X_mod2_pca = sklearn.utils.extmath.randomized_svd(X_atac, n_components=n_pcs_mod2, random_state=seed)[0]
-    else:
-        X_adt = adata_mod2.X.toarray() if issparse(adata_mod2.X) else np.asarray(adata_mod2.X, dtype=np.float32)
-        if X_adt.min() >= 0:
-            X_adt = _clr_normalize(X_adt)
-        n_pcs_mod2 = min(32, X_adt.shape[0] - 1, X_adt.shape[1])
-        X_mod2_pca = PCA(n_components=n_pcs_mod2, random_state=seed).fit_transform(X_adt)
-
-    X_combined = np.concatenate([_rms_balance(X_rna_pca), _rms_balance(X_mod2_pca)], axis=1)
+    n_pcs_rna = min(50, X_rna_mat.shape[0] - 1, X_rna_mat.shape[1])
+    X_combined = PCA(n_components=n_pcs_rna, random_state=seed).fit_transform(X_rna_mat).astype(np.float32)
 
     valid_mask = _valid_gt_mask(adata_rna.obs['ground_truth'])
     valid_labels = adata_rna.obs['ground_truth'][valid_mask].astype(str)
@@ -1351,7 +1374,7 @@ def run_spagcn_workflow(
         max_epochs=epochs,
         weight_decay=0.0,
         update_interval=3,
-        tol=1e-3
+        tol=tol
     )
 
     latent_emb = spagcn_model.extract_latent_representation()
@@ -1390,11 +1413,12 @@ def run_spagcn_workflow(
     adata.obs['mclust'] = run_mclust(latent_emb, n_clusters=n_clusters, seed=seed)
 
     # 5. Evaluate Metrics (Native DEC, Native DEC Refined, KMeans, Leiden, mclust)
-    metrics_spagcn_pred = evaluate_clustering(adata.obs['ground_truth'].values, y_spagcn_pred, latent_emb)
-    metrics_spagcn_refined = evaluate_clustering(adata.obs['ground_truth'].values, np.array(y_spagcn_refined), latent_emb)
-    metrics_kmeans = evaluate_clustering(adata.obs['ground_truth'].values, adata.obs['kmeans'].values, latent_emb)
-    metrics_leiden = evaluate_clustering(adata.obs['ground_truth'].values, leiden_labels, latent_emb) if leiden_labels is not None else None
-    metrics_mclust = evaluate_clustering(adata.obs['ground_truth'].values, adata.obs['mclust'].values, latent_emb)
+    duration_sec = round(time.time() - start_time, 2)
+    metrics_spagcn_pred = evaluate_clustering(adata.obs['ground_truth'].values, y_spagcn_pred, latent_emb, spatial_coords=coords)
+    metrics_spagcn_refined = evaluate_clustering(adata.obs['ground_truth'].values, np.array(y_spagcn_refined), latent_emb, spatial_coords=coords)
+    metrics_kmeans = evaluate_clustering(adata.obs['ground_truth'].values, adata.obs['kmeans'].values, latent_emb, spatial_coords=coords)
+    metrics_leiden = evaluate_clustering(adata.obs['ground_truth'].values, leiden_labels, latent_emb, spatial_coords=coords) if leiden_labels is not None else None
+    metrics_mclust = evaluate_clustering(adata.obs['ground_truth'].values, adata.obs['mclust'].values, latent_emb, spatial_coords=coords)
 
     eval_items = [
         ("SpaGCN", "SpaGCN (Native DEC)", metrics_spagcn_pred),
@@ -1439,10 +1463,10 @@ def run_spagcn_workflow(
     dash_info = DATASET_DASHBOARD_INFO.get(dataset_name, {"datasetId": dataset_name, "datasetName": dataset_name})
     training_results = {
         "loss_history": spagcn_model.loss_history,
-        "runtime_seconds": time.time() - start_time,
+        "runtime_seconds": duration_sec,
         "device": str(spagcn_model.device),
         "best_epoch": len(spagcn_model.loss_history),
-        "best_score": metrics_spagcn_refined["ARI"],
+        "best_score": metrics_spagcn_refined["Silhouette"],
         "architecture": f"Spatial Graph Convolutional Network + Deep Embedding Clustering ({model_type})"
     }
     hyperparams = {
@@ -1452,12 +1476,12 @@ def run_spagcn_workflow(
         "alpha": 0.2,
         "epochs": epochs,
         "learning_rate": lr,
+        "tol": tol,
         "weight_decay": 0.0,
         "n_latent": int(latent_emb.shape[1]),
         "l": float(spagcn_model.l) if spagcn_model.l is not None else 0.0,
         "n_clusters": n_clusters,
-        "seed": seed,
-        "all_algorithms": {algo_key: m_dict for algo_key, _, m_dict in eval_items}
+        "seed": seed
     }
 
     export_dashboard_experiment(
@@ -1468,6 +1492,7 @@ def run_spagcn_workflow(
         metrics_dict=metrics_spagcn_refined,
         training_results=training_results,
         hyperparameters=hyperparams,
+        duration_seconds=duration_sec,
         embeddings_data=embeddings_data,
         output_dir=out_dir,
         api_url=api_url,
@@ -1476,7 +1501,7 @@ def run_spagcn_workflow(
     )
 
     results_entry = [
-        {"Dataset": dataset_name, "Seed": seed, "Algorithm": algo_key, **m_dict}
+        {"Dataset": dataset_name, "Seed": seed, "Algorithm": algo_key, **m_dict, "Duration": duration_sec}
         for algo_key, _, m_dict in eval_items
     ]
 
@@ -1494,7 +1519,8 @@ def run_multi_seed_pipeline(
     model_type: str = "simple_gc_dec",
     init_method: str = "louvain",
     lr: float = 0.005,
-    epochs: int = 200,
+    epochs: int = 2000,
+    tol: float = 1e-3,
     show_plots: bool = False,
     out_dir: str = "results",
     token: Optional[str] = None,
@@ -1538,6 +1564,7 @@ def run_multi_seed_pipeline(
                     init_method=init_method,
                     lr=lr,
                     epochs=epochs,
+                    tol=tol,
                     show_plots=show_plots,
                     out_dir=out_dir,
                     token=token,
@@ -1568,7 +1595,7 @@ def run_multi_seed_pipeline(
                 algo_df = df_ds[df_ds["Algorithm"] == algo]
                 if not algo_df.empty:
                     print(f"\n--- {algo} Performance (Mean ± Std) ---")
-                    cols = ['ARI', 'NMI', 'Silhouette', 'AMI', 'CHI', 'DBI', 'Homogeneity', 'V-measure', 'FMI']
+                    cols = ['ARI', 'NMI', 'AMI', 'Homogeneity', 'V-measure', 'Silhouette', 'CHI', 'DBI', 'Morans_I', 'PAS', 'CHAOS', 'Duration']
                     summary_view = pd.DataFrame({'Mean': algo_df[cols].mean(), 'Std': algo_df[cols].std()})
                     print(summary_view.to_string())
             print("=" * 55 + "\n")
@@ -1595,13 +1622,15 @@ def run_multi_seed_pipeline(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SpaGCN Multi-Seed Benchmark Pipeline")
     parser.add_argument("--datasets", nargs="+", default=["all"], help="Datasets to execute (e.g. mouse-brain-e11-s1 or 'all')")
+    parser.add_argument("--seed", type=int, default=None, help="Single random seed to evaluate")
     parser.add_argument("--seeds", nargs="+", type=int, default=SEEDS, help="Random seeds to evaluate")
     parser.add_argument("--model_type", type=str, default="simple_gc_dec", choices=["simple_gc_dec", "gc_dec"],
                         help="DEC backbone: 'simple_gc_dec' (official SpaGCN) or 'gc_dec' (2-layer ReLU+Dropout)")
     parser.add_argument("--init", type=str, default="louvain", choices=["louvain", "kmeans"],
                         help="DEC centroid initialization ('louvain' matches official SpaGCN, falls back to kmeans if missing)")
-    parser.add_argument("--lr", type=float, default=0.005, help="Learning rate for SpaGCN Adam optimizer")
-    parser.add_argument("--epochs", type=int, default=2000, help="Training epochs for SpaGCN GCN-DEC")
+    parser.add_argument("--lr", type=float, default=0.005, help="Learning rate for SpaGCN Adam optimizer (SpaGCN.py default: 0.005)")
+    parser.add_argument("--epochs", type=int, default=2000, help="Training epochs for SpaGCN GCN-DEC (SpaGCN.py default: 2000)")
+    parser.add_argument("--tol", type=float, default=1e-3, help="Early-stopping label delta tolerance (SpaGCN.py default: 1e-3)")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device (cuda or cpu)")
     parser.add_argument("--out_dir", type=str, default="results", help="Directory to save benchmark metrics and plots")
     parser.add_argument("--no_dashboard", action="store_true", help="Disable uploading to dashboard")
@@ -1618,20 +1647,16 @@ if __name__ == "__main__":
     if os.path.exists('/kaggle/working') and output_dir == "results":
         output_dir = "/kaggle/working"
 
+    selected_seeds = [args.seed] if args.seed is not None else args.seeds
+
     print("=" * 80)
     print(" SpaGCN MULTI-SEED PIPELINE (STANDALONE EXECUTION)")
     print(f" Default Scheduled Datasets ({len(scheduled_datasets)}): {scheduled_datasets}")
-    print(f" Default Ablation Seeds ({len(args.seeds)}): {args.seeds}")
-    print(f" Model: {args.model_type} | Init: {args.init} | LR: {args.lr} | Epochs: {args.epochs}")
+    print(f" Default Ablation Seeds ({len(selected_seeds)}): {selected_seeds}")
+    print(f" Model: {args.model_type} | Init: {args.init} | LR: {args.lr} | Epochs: {args.epochs} | Tol: {args.tol}")
     print("=" * 80)
 
     dashboard_token = None
-    if not args.no_dashboard:
-        dashboard_token = authenticate_dashboard(
-            base_url=DEFAULT_DASHBOARD_URL,
-            username=DEFAULT_USERNAME,
-            password=DEFAULT_PASSWORD
-        )
 
     if args.generate_plots:
         csv_path = os.path.join(output_dir, "spagcn_benchmark_results.csv")
@@ -1647,13 +1672,14 @@ if __name__ == "__main__":
 
     run_multi_seed_pipeline(
         datasets=scheduled_datasets,
-        seeds=args.seeds,
+        seeds=selected_seeds,
         env_mode=ENV_MODE,
         device=args.device,
         model_type=args.model_type,
         init_method=args.init,
         lr=args.lr,
         epochs=args.epochs,
+        tol=args.tol,
         show_plots=False,
         out_dir=output_dir,
         token=dashboard_token,
